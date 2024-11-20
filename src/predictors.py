@@ -1,5 +1,5 @@
 import numpy as np
-from Typing import NamedTuple, Optional, Union
+from typing import NamedTuple, Optional, Union
 
 NODATAVALUE = 65535
 
@@ -11,5 +11,5 @@ class Predictors(NamedTuple):
     dem: Optional[np.ndarray] = None
     latlon: Optional[np.ndarray] = None
     valid_date: Optional[np.ndarray] = None
-    label: Optional[Union[np.ndarray,float]] = None
-    month: Optional[Union[np.ndarray,int]] = None
+    label: Optional[Union[np.ndarray, float]] = None
+    month: Optional[Union[np.ndarray, int]] = None
