@@ -22,7 +22,6 @@ BANDS = [
     "B7",
     "B8",
     "B8A",
-    "B9",
     "B11",
     "B12",
     "temperature_2m",
@@ -30,6 +29,47 @@ BANDS = [
     "elevation",
     "slope",
     "NDVI",
+]
+BANDS_ADD = [
+    25.0,
+    25.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    # shift to celcius
+    -272.15,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+]
+BANDS_DIV = [
+    25.0,
+    25.0,
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    # empirically, temp ranges from 37 to -22 degrees celcius
+    35.0,
+    # empirically assessed
+    0.03,
+    2000.0,
+    50.0,
+    1.0,
 ]
 BANDS_GROUPS_IDX = OrderedDict(
     [

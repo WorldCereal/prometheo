@@ -1,14 +1,77 @@
-from .single_file_presto import BANDS_GROUPS_IDX, BANDS
+from .single_file_presto import (
+    BANDS_GROUPS_IDX,
+    BANDS,
+    NUM_DYNAMIC_WORLD_CLASSES,
+    BANDS_ADD,
+    BANDS_DIV,
+)
 import numpy as np
 from src.predictors import Predictors, S1_bands, NODATAVALUE
+from einops import repeat
+import warnings
 
 
+# the mapper defines the mapping of predictor bands to presto bands
 mapper = {
     "S1": {
         "predictor": [S1_bands.index("VV"), S1_bands.index("VH")],
         "presto": [BANDS.index("VV"), BANDS.index("VH")],
     }
 }
+
+
+def calculate_ndvi(input_array):
+    r"""
+    Given an input array of shape [timestep, bands] or [batches, timesteps, shapes]
+    where bands == len(bands), returns an array of shape
+    [timestep, bands + 1] where the extra band is NDVI,
+    (b08 - b04) / (b08 + b04)
+    """
+    band_1, band_2 = "B8", "B4"
+
+    num_dims = len(input_array.shape)
+    if num_dims == 2:
+        band_1_np = input_array[:, BANDS.index(band_1)]
+        band_2_np = input_array[:, BANDS.index(band_2)]
+    elif num_dims == 3:
+        band_1_np = input_array[:, :, BANDS.index(band_1)]
+        band_2_np = input_array[:, :, BANDS.index(band_2)]
+    else:
+        raise ValueError(f"Expected num_dims to be 2 or 3 - got {num_dims}")
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore", message="invalid value encountered in true_divide"
+        )
+        # suppress the following warning
+        # RuntimeWarning: invalid value encountered in true_divide
+        # for cases where near_infrared + red == 0
+        # since this is handled in the where condition
+        x = np.where(
+            (band_1_np + band_2_np) > 0,
+            (band_1_np - band_2_np) / (band_1_np + band_2_np),
+            0,
+        )
+    mask = (
+        (band_1_np == NODATAVALUE)
+        | (band_2_np == NODATAVALUE)
+        | ((band_1_np + band_2_np) == 0)
+    )
+    return x, mask
+
+
+def normalize(x: np.ndarray, mask: np.ndarray):
+    x = ((x + BANDS_ADD) / BANDS_DIV).astype(np.float32)
+    ndvi, ndvi_mask = calculate_ndvi(x)
+
+    if len(x.shape) == 2:
+        x[:, BANDS.index("NDVI")] = ndvi
+        mask[:, BANDS.index("NDVI")] = ndvi_mask
+
+    else:
+        x[:, :, BANDS.index("NDVI")] = ndvi
+        mask[:, :, BANDS.index("NDVI")] = ndvi_mask
+    return x
 
 
 def dataset_to_model(x: Predictors):
@@ -41,15 +104,32 @@ def dataset_to_model(x: Predictors):
             x.s1[:, 0, 0, :, mapper["S1"]["predictor"]] == NODATAVALUE
         )
 
-    # if dynamic_world is None:
-    #     dynamic_world = np.ones(batch_size, timesteps) * (DynamicWorld2020_2021.class_amount)
+    if x.s2 is not None:
+        h, w = x.s2.shape[1], x.s2.shape[2]
+        if (h != 1) or (w != 1):
+            raise ValueError("Presto does not support h, w > 1")
 
-    # if normalize:
-    #     # normalize includes x = x[:, keep_indices]
-    #     x = S1_S2_ERA5_SRTM.normalize(x)
-    #     if s2_bands is not None:
-    #         if ("B8" in s2_bands) and ("B4" in s2_bands):
-    #             mask[:, NORMED_BANDS.index("NDVI")] = 0
-    # else:
-    #     x = x[:, keep_indices]
-    # return x, mask, dynamic_world
+        x[:, :, mapper["S2"]["presto"]] = x.s2[:, 0, 0, :, mapper["S2"]["predictor"]]
+        mask[:, :, mapper["S2"]["presto"]] = (
+            x.s2[:, 0, 0, :, mapper["S2"]["predictor"]] == NODATAVALUE
+        )
+
+    if x.meteo is not None:
+        x[:, :, mapper["meteo"]["presto"]] = x.meteo[:, :, mapper["meteo"]["predictor"]]
+        mask[:, :, mapper["meteo"]["presto"]] = (
+            x.meteo[:, :, mapper["meteo"]["predictor"]] == NODATAVALUE
+        )
+
+    if x.dem is not None:
+        h, w = x.dem.shape[1], x.dem.shape[2]
+        if (h != 1) or (w != 1):
+            raise ValueError("Presto does not support h, w > 1")
+        dem_with_time = repeat(
+            x.dem[:, 0, 0, mapper["dem"]["predictor"]], "b d -> b t d", t=timesteps
+        )
+        mask[:, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
+
+    dynamic_world = np.ones(batch_size, timesteps) * NUM_DYNAMIC_WORLD_CLASSES
+
+    x, mask = normalize(x, mask)
+    return x, mask, dynamic_world
