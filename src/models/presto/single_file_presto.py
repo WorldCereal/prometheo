@@ -10,6 +10,27 @@ from torch import nn
 from torch.jit import Final
 from torch.nn import functional as F
 
+
+BANDS = [
+    "VV",
+    "VH",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "B6",
+    "B7",
+    "B8",
+    "B8A",
+    "B9",
+    "B11",
+    "B12",
+    "temperature_2m",
+    "total_precipitation",
+    "elevation",
+    "slope",
+    "NDVI",
+]
 BANDS_GROUPS_IDX = OrderedDict(
     [
         ("S1", [0, 1]),
@@ -46,7 +67,9 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
-        self.fast_attn = hasattr(torch.nn.functional, "scaled_dot_product_attention")  # FIXME
+        self.fast_attn = hasattr(
+            torch.nn.functional, "scaled_dot_product_attention"
+        )  # FIXME
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
@@ -57,7 +80,11 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -147,7 +174,9 @@ class Block(nn.Module):
             proj_drop=drop,
             norm_layer=norm_layer,
         )
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls1 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
 
         self.norm2 = norm_layer(dim)
         self.mlp = Mlp(
@@ -156,7 +185,9 @@ class Block(nn.Module):
             act_layer=act_layer,
             drop=drop,
         )
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls2 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
 
     def forward(self, x):
         x = x + self.ls1(self.attn(self.norm1(x)))
@@ -221,7 +252,10 @@ def month_to_tensor(
         )
     elif len(month.shape) == 1:
         month = torch.stack(
-            [torch.fmod(torch.arange(m, m + seq_len, dtype=torch.long), 12) for m in month]
+            [
+                torch.fmod(torch.arange(m, m + seq_len, dtype=torch.long), 12)
+                for m in month
+            ]
         ).to(device)
     return month
 
@@ -244,9 +278,12 @@ class Encoder(nn.Module):
 
         # this is used for the channel embedding
         self.band_group_to_idx = {
-            group_name: idx for idx, (group_name, _) in enumerate(self.band_groups.items())
+            group_name: idx
+            for idx, (group_name, _) in enumerate(self.band_groups.items())
         }
-        self.band_group_to_idx["dynamic_world"] = max(self.band_group_to_idx.values()) + 1
+        self.band_group_to_idx["dynamic_world"] = (
+            max(self.band_group_to_idx.values()) + 1
+        )
 
         self.eo_patch_embed = nn.ModuleDict(
             {
@@ -275,7 +312,9 @@ class Encoder(nn.Module):
 
         # the positional + monthly + channel embedding
         self.max_sequence_length = max_sequence_length
-        pos_embedding_size = int(embedding_size * (1 - (channel_embed_ratio + month_embed_ratio)))
+        pos_embedding_size = int(
+            embedding_size * (1 - (channel_embed_ratio + month_embed_ratio))
+        )
         channel_embedding_size = int(embedding_size * channel_embed_ratio)
         month_embedding_size = int(embedding_size * month_embed_ratio)
         self.pos_embed = nn.Parameter(
@@ -284,14 +323,16 @@ class Encoder(nn.Module):
         month_tab = get_month_encoding_table(month_embedding_size)
         self.month_embed = nn.Embedding.from_pretrained(month_tab, freeze=True)
         self.channel_embed = nn.Embedding(
-            num_embeddings=len(self.band_groups) + 1, embedding_dim=channel_embedding_size
+            num_embeddings=len(self.band_groups) + 1,
+            embedding_dim=channel_embedding_size,
         )
 
         self.initialize_weights()
 
     def initialize_weights(self):
-
-        pos_embed = get_sinusoid_encoding_table(self.pos_embed.shape[1], self.pos_embed.shape[-1])
+        pos_embed = get_sinusoid_encoding_table(
+            self.pos_embed.shape[1], self.pos_embed.shape[-1]
+        )
         self.pos_embed.data.copy_(pos_embed)
 
         # initialize nn.Linear and nn.LayerNorm
@@ -332,13 +373,17 @@ class Encoder(nn.Module):
         embedding_dim = x.shape[-1]
 
         # we want the mask to just be the indices of the masked tokens
-        indices = repeat(torch.arange(0, x.shape[1]).long().to(x.device), "d -> b d", b=x.shape[0])
+        indices = repeat(
+            torch.arange(0, x.shape[1]).long().to(x.device), "d -> b d", b=x.shape[0]
+        )
 
         x = x[~mask.bool()].view(batch_size, kept_elements_per_batch, embedding_dim)
 
         mask = mask[:, :, 0]
         kept_indices = indices[~mask.bool()].view(batch_size, kept_elements_per_batch)
-        removed_indices = indices[mask.bool()].view(batch_size, removed_elements_per_batch)
+        removed_indices = indices[mask.bool()].view(
+            batch_size, removed_elements_per_batch
+        )
 
         return x, kept_indices, removed_indices
 
@@ -359,7 +404,9 @@ class Encoder(nn.Module):
         months = month_to_tensor(month, x.shape[0], x.shape[1], device)
         month_embedding = self.month_embed(months)
         positional_embedding = repeat(
-            self.pos_embed[:, : x.shape[1], :], "b t d -> (repeat b) t d", repeat=x.shape[0]
+            self.pos_embed[:, : x.shape[1], :],
+            "b t d -> (repeat b) t d",
+            repeat=x.shape[0],
         )
 
         # we assume the number of masked patches is the same
@@ -371,7 +418,9 @@ class Encoder(nn.Module):
             channel_embedding = self.channel_embed(
                 torch.tensor(self.band_group_to_idx[channel_group]).long().to(device)
             )
-            channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
+            channel_embedding = repeat(
+                channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1]
+            )
             if channel_group == "SRTM":
                 # for SRTM, we reduce it to a single token instead of
                 # a token per timestep
@@ -405,7 +454,9 @@ class Encoder(nn.Module):
         channel_embedding = self.channel_embed(
             torch.tensor(self.band_group_to_idx["dynamic_world"]).long().to(device)
         )
-        channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
+        channel_embedding = repeat(
+            channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1]
+        )
         positional_embedding = torch.cat(
             (month_embedding, channel_embedding, positional_embedding), dim=-1
         )
@@ -414,7 +465,9 @@ class Encoder(nn.Module):
 
         # now we calculate the mask for these [b, t] tokens
         group_mask = repeat(
-            dynamic_world == NUM_DYNAMIC_WORLD_CLASSES, "b t -> b t d", d=tokens.shape[-1]
+            dynamic_world == NUM_DYNAMIC_WORLD_CLASSES,
+            "b t -> b t d",
+            d=tokens.shape[-1],
         )
         all_masks.append(group_mask)
 
@@ -453,9 +506,12 @@ class Decoder(nn.Module):
 
         # this is used for the channel embedding
         self.band_group_to_idx = {
-            group_name: idx for idx, (group_name, _) in enumerate(self.band_groups.items())
+            group_name: idx
+            for idx, (group_name, _) in enumerate(self.band_groups.items())
         }
-        self.band_group_to_idx["dynamic_world"] = max(self.band_group_to_idx.values()) + 1
+        self.band_group_to_idx["dynamic_world"] = (
+            max(self.band_group_to_idx.values()) + 1
+        )
 
         self.decoder_embed = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=True)
 
@@ -499,8 +555,9 @@ class Decoder(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-
-        pos_embed = get_sinusoid_encoding_table(self.pos_embed.shape[1], self.pos_embed.shape[-1])
+        pos_embed = get_sinusoid_encoding_table(
+            self.pos_embed.shape[1], self.pos_embed.shape[-1]
+        )
         self.pos_embed.data.copy_(pos_embed)
 
         # initialize nn.Linear and nn.LayerNorm
@@ -527,7 +584,9 @@ class Decoder(nn.Module):
         combined_indices = torch.cat([kept_indices, removed_indices], dim=1) + 1
         # 0 for latlon index
         combined_indices = torch.sort(
-            torch.cat([torch.zeros_like(combined_indices[:, 0:1]), combined_indices], dim=1)
+            torch.cat(
+                [torch.zeros_like(combined_indices[:, 0:1]), combined_indices], dim=1
+            )
         )[1]
         # and then tile for each dimension
         combined_indices = repeat(combined_indices, "b t -> b t d", d=x.shape[-1])
@@ -545,11 +604,15 @@ class Decoder(nn.Module):
         # when we expand the encodings, each channel_group gets num_timesteps
         # encodings. However, there is only one SRTM token so we remove the
         # excess SRTM encodings
-        remove_mask = torch.full(size=(num_timesteps * num_channel_groups,), fill_value=False)
+        remove_mask = torch.full(
+            size=(num_timesteps * num_channel_groups,), fill_value=False
+        )
         remove_mask[torch.arange(num_timesteps - 1) + srtm_index] = True
 
         month_embedding = repeat(
-            self.month_embed(months), "b t d -> b (repeat t) d", repeat=num_channel_groups
+            self.month_embed(months),
+            "b t d -> b (repeat t) d",
+            repeat=num_channel_groups,
         )
         month_embedding = month_embedding[:, ~remove_mask]
         month_embedding[:, srtm_index] = 0
@@ -575,7 +638,8 @@ class Decoder(nn.Module):
 
         # add the zero embedding for the latlon token
         positional_embedding = torch.cat(
-            [torch.zeros_like(positional_embedding[:, 0:1, :]), positional_embedding], dim=1
+            [torch.zeros_like(positional_embedding[:, 0:1, :]), positional_embedding],
+            dim=1,
         )
 
         x += positional_embedding
@@ -621,7 +685,6 @@ class Decoder(nn.Module):
         return torch.cat(eo_output, dim=-1), cast(torch.Tensor, dw_output)
 
     def forward(self, x, kept_indices, removed_indices, month):
-
         x = self.decoder_embed(x)
         x = self.add_masked_tokens(x, kept_indices, removed_indices)
         x = self.add_embeddings(x, month)
@@ -654,7 +717,6 @@ class PrestoFineTuningModel(nn.Module):
         mask: Optional[torch.Tensor] = None,
         month: Union[torch.Tensor, int] = 0,
     ) -> torch.Tensor:
-
         return self.head(
             self.encoder(
                 x=x,
@@ -752,6 +814,8 @@ class Presto(nn.Module):
             hidden_size=self.encoder.embedding_size,
             regression=regression,
         )
-        model = PrestoFineTuningModel(self.encoder, head).to(self.encoder.pos_embed.device)
+        model = PrestoFineTuningModel(self.encoder, head).to(
+            self.encoder.pos_embed.device
+        )
         model.train()
         return model
