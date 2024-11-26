@@ -4,6 +4,7 @@ from .single_file_presto import (
     NUM_DYNAMIC_WORLD_CLASSES,
     BANDS_ADD,
     BANDS_DIV,
+    Encoder,
 )
 import numpy as np
 from src.predictors import (
@@ -13,9 +14,21 @@ from src.predictors import (
     meteo_bands,
     dem_bands,
     S2_bands,
+    to_torchtensor,
 )
 from einops import repeat
 import warnings
+from torch import nn
+from typing import Union
+from functools import lru_cache
+import torch
+
+from src.utils import device
+from pathlib import Path
+import requests
+import io
+
+default_model_path = Path(__file__).parent / "default_model.pt"
 
 
 # the mapper defines the mapping of predictor bands to presto bands
@@ -91,11 +104,18 @@ def calculate_ndvi(input_array):
         # RuntimeWarning: invalid value encountered in true_divide
         # for cases where near_infrared + red == 0
         # since this is handled in the where condition
-        x = np.where(
-            (band_1_np + band_2_np) > 0,
-            (band_1_np - band_2_np) / (band_1_np + band_2_np),
-            0,
-        )
+        if isinstance(band_1_np, np.ndarray):
+            x = np.where(
+                (band_1_np + band_2_np) > 0,
+                (band_1_np - band_2_np) / (band_1_np + band_2_np),
+                0,
+            )
+        else:
+            x = torch.where(
+                (band_1_np + band_2_np) > 0,
+                (band_1_np - band_2_np) / (band_1_np + band_2_np),
+                0,
+            )
     mask = (
         (band_1_np == NODATAVALUE)
         | (band_2_np == NODATAVALUE)
@@ -105,7 +125,11 @@ def calculate_ndvi(input_array):
 
 
 def normalize(x: np.ndarray, mask: np.ndarray):
-    x = ((x + BANDS_ADD) / BANDS_DIV).astype(np.float32)
+    if isinstance(x, np.ndarray):
+        x = ((x + BANDS_ADD) / BANDS_DIV).astype(np.float32)
+    else:
+        x = (x + torch.tensor(BANDS_ADD)) / torch.tensor(BANDS_DIV)
+
     ndvi, ndvi_mask = calculate_ndvi(x)
 
     if len(x.shape) == 2:
@@ -133,7 +157,7 @@ def dataset_to_model(x: Predictors):
     batch_size, timesteps = batch_sizes[0], timesteps[0]
     total_bands = sum([len(v) for _, v in BANDS_GROUPS_IDX.items()])
 
-    mask, x = (
+    mask, output = (
         np.ones(batch_size, timesteps, total_bands),
         np.zeros(batch_size, timesteps, total_bands),
     )
@@ -143,7 +167,9 @@ def dataset_to_model(x: Predictors):
         if (h != 1) or (w != 1):
             raise ValueError("Presto does not support h, w > 1")
 
-        x[:, :, mapper["S1"]["presto"]] = x.s1[:, 0, 0, :, mapper["S1"]["predictor"]]
+        output[:, :, mapper["S1"]["presto"]] = x.s1[
+            :, 0, 0, :, mapper["S1"]["predictor"]
+        ]
         mask[:, :, mapper["S1"]["presto"]] = (
             x.s1[:, 0, 0, :, mapper["S1"]["predictor"]] == NODATAVALUE
         )
@@ -153,13 +179,17 @@ def dataset_to_model(x: Predictors):
         if (h != 1) or (w != 1):
             raise ValueError("Presto does not support h, w > 1")
 
-        x[:, :, mapper["S2"]["presto"]] = x.s2[:, 0, 0, :, mapper["S2"]["predictor"]]
+        output[:, :, mapper["S2"]["presto"]] = x.s2[
+            :, 0, 0, :, mapper["S2"]["predictor"]
+        ]
         mask[:, :, mapper["S2"]["presto"]] = (
             x.s2[:, 0, 0, :, mapper["S2"]["predictor"]] == NODATAVALUE
         )
 
     if x.meteo is not None:
-        x[:, :, mapper["meteo"]["presto"]] = x.meteo[:, :, mapper["meteo"]["predictor"]]
+        output[:, :, mapper["meteo"]["presto"]] = x.meteo[
+            :, :, mapper["meteo"]["predictor"]
+        ]
         mask[:, :, mapper["meteo"]["presto"]] = (
             x.meteo[:, :, mapper["meteo"]["predictor"]] == NODATAVALUE
         )
@@ -171,9 +201,50 @@ def dataset_to_model(x: Predictors):
         dem_with_time = repeat(
             x.dem[:, 0, 0, mapper["dem"]["predictor"]], "b d -> b t d", t=timesteps
         )
+        output[:, :, mapper["dem"]["presto"]] = dem_with_time
         mask[:, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
 
     dynamic_world = np.ones(batch_size, timesteps) * NUM_DYNAMIC_WORLD_CLASSES
 
-    x, mask = normalize(x, mask)
-    return x, mask, dynamic_world
+    output, mask = normalize(output, mask)
+    return output, mask, dynamic_world
+
+
+class PretrainedPrestoWrapper(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.presto = Encoder()
+
+    @classmethod
+    @lru_cache(maxsize=6)
+    def load_pretrained(
+        cls,
+        model_path: Union[str, Path] = default_model_path,
+        strict: bool = True,
+    ):
+        model = cls()
+        if isinstance(model_path, str) and (model_path.startswith("http")):
+            response = requests.get(model_path)
+            presto_model_layers = torch.load(
+                io.BytesIO(response.content), map_location=device
+            )
+            model.presto.load_state_dict(presto_model_layers, strict=strict)
+        else:
+            model.presto.load_state_dict(
+                torch.load(model_path, map_location=device), strict=strict
+            )
+
+        return model
+
+    def forward(self, x: Predictors):
+        s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
+
+        return self.presto(
+            x=to_torchtensor(s1_s2_era5_srtm, device=device),
+            dynamic_world=to_torchtensor(dynamic_world, device=device),
+            latlons=to_torchtensor(x.latlon, device=device),
+            mask=to_torchtensor(mask, device=device),
+            month=x.month
+            if isinstance(x.month, int)
+            else to_torchtensor(x.month, device=device),
+        )

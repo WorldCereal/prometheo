@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from typing import List, NamedTuple, Optional, Union
 
 NODATAVALUE = 65535
@@ -28,14 +29,17 @@ meteo_bands = ["temperature", "precipitation"]
 dem_bands = ["elevation", "slope"]
 
 
+ArrayTensor = Union[np.ndarray, torch.Tensor]
+
+
 class Predictors(NamedTuple):
-    s1: Optional[np.ndarray] = None  # [B, H, W, T, len(S1_bands)]
-    s2: Optional[np.ndarray] = None  # [B, H, W, T, len(S2_bands)]
-    meteo: Optional[np.ndarray] = None  # [B, T, len(meteo_bands)]
-    dem: Optional[np.ndarray] = None  # [B, H, W, len(dem)]
-    latlon: Optional[np.ndarray] = None
+    s1: Optional[ArrayTensor] = None  # [B, H, W, T, len(S1_bands)]
+    s2: Optional[ArrayTensor] = None  # [B, H, W, T, len(S2_bands)]
+    meteo: Optional[ArrayTensor] = None  # [B, T, len(meteo_bands)]
+    dem: Optional[ArrayTensor] = None  # [B, H, W, len(dem)]
+    latlon: Optional[ArrayTensor] = None  # [B, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
-    aux_inputs: Optional[List[np.ndarray]] = None
+    aux_inputs: Optional[List[ArrayTensor]] = None
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[np.ndarray] = None
-    month: Optional[Union[np.ndarray, int]] = None
+    label: Optional[ArrayTensor] = None
+    month: Optional[Union[ArrayTensor, int]] = None
