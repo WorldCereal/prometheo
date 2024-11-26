@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 from typing import List, NamedTuple, Optional, Union
+from src.utils import device
 
 NODATAVALUE = 65535
 
@@ -30,6 +31,12 @@ dem_bands = ["elevation", "slope"]
 
 
 ArrayTensor = Union[np.ndarray, torch.Tensor]
+
+
+def to_torchtensor(x: ArrayTensor, device: torch.device = device):
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    return x.to(device)
 
 
 class Predictors(NamedTuple):
