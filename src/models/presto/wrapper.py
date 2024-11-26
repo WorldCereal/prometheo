@@ -139,7 +139,7 @@ def normalize(x: np.ndarray, mask: np.ndarray):
     else:
         x[:, :, BANDS.index("NDVI")] = ndvi
         mask[:, :, BANDS.index("NDVI")] = ndvi_mask
-    return x
+    return x, mask
 
 
 def dataset_to_model(x: Predictors):
@@ -158,33 +158,32 @@ def dataset_to_model(x: Predictors):
     total_bands = sum([len(v) for _, v in BANDS_GROUPS_IDX.items()])
 
     mask, output = (
-        np.ones(batch_size, timesteps, total_bands),
-        np.zeros(batch_size, timesteps, total_bands),
+        np.ones((batch_size, timesteps, total_bands)),
+        np.zeros((batch_size, timesteps, total_bands)),
     )
 
     if x.s1 is not None:
         h, w = x.s1.shape[1], x.s1.shape[2]
         if (h != 1) or (w != 1):
             raise ValueError("Presto does not support h, w > 1")
-
-        output[:, :, mapper["S1"]["presto"]] = x.s1[
-            :, 0, 0, :, mapper["S1"]["predictor"]
-        ]
-        mask[:, :, mapper["S1"]["presto"]] = (
-            x.s1[:, 0, 0, :, mapper["S1"]["predictor"]] == NODATAVALUE
-        )
+        # for some reason, doing
+        # x.s1[ :, 0, 0, :, mapper["S1"]["predictor"]]
+        # directly yields an array of shape [bands, batch_size, timesteps]
+        # but splitting it like this doesn't. I am not sure why
+        s1_hw = x.s1[:, 0, 0, :, :]
+        s1_hw_bands = s1_hw[:, :, mapper["S1"]["predictor"]]
+        output[:, :, mapper["S1"]["presto"]] = s1_hw_bands
+        mask[:, :, mapper["S1"]["presto"]] = s1_hw_bands == NODATAVALUE
 
     if x.s2 is not None:
         h, w = x.s2.shape[1], x.s2.shape[2]
         if (h != 1) or (w != 1):
             raise ValueError("Presto does not support h, w > 1")
 
-        output[:, :, mapper["S2"]["presto"]] = x.s2[
-            :, 0, 0, :, mapper["S2"]["predictor"]
-        ]
-        mask[:, :, mapper["S2"]["presto"]] = (
-            x.s2[:, 0, 0, :, mapper["S2"]["predictor"]] == NODATAVALUE
-        )
+        s2_hw = x.s2[:, 0, 0, :, :]
+        s2_hw_bands = s2_hw[:, :, mapper["S2"]["predictor"]]
+        output[:, :, mapper["S2"]["presto"]] = s2_hw_bands
+        mask[:, :, mapper["S2"]["presto"]] = s2_hw_bands == NODATAVALUE
 
     if x.meteo is not None:
         output[:, :, mapper["meteo"]["presto"]] = x.meteo[
@@ -204,7 +203,7 @@ def dataset_to_model(x: Predictors):
         output[:, :, mapper["dem"]["presto"]] = dem_with_time
         mask[:, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
 
-    dynamic_world = np.ones(batch_size, timesteps) * NUM_DYNAMIC_WORLD_CLASSES
+    dynamic_world = np.ones((batch_size, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
     output, mask = normalize(output, mask)
     return output, mask, dynamic_world
@@ -240,11 +239,11 @@ class PretrainedPrestoWrapper(nn.Module):
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
 
         return self.presto(
-            x=to_torchtensor(s1_s2_era5_srtm, device=device),
-            dynamic_world=to_torchtensor(dynamic_world, device=device),
-            latlons=to_torchtensor(x.latlon, device=device),
-            mask=to_torchtensor(mask, device=device),
+            x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
+            dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
+            latlons=to_torchtensor(x.latlon, device=device).float(),
+            mask=to_torchtensor(mask, device=device).long(),
             month=x.month
             if isinstance(x.month, int)
-            else to_torchtensor(x.month, device=device),
+            else to_torchtensor(x.month, device=device).long(),
         )
