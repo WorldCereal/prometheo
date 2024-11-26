@@ -6,7 +6,14 @@ from .single_file_presto import (
     BANDS_DIV,
 )
 import numpy as np
-from src.predictors import Predictors, S1_bands, NODATAVALUE
+from src.predictors import (
+    Predictors,
+    S1_bands,
+    NODATAVALUE,
+    meteo_bands,
+    dem_bands,
+    S2_bands,
+)
 from einops import repeat
 import warnings
 
@@ -16,7 +23,44 @@ mapper = {
     "S1": {
         "predictor": [S1_bands.index("VV"), S1_bands.index("VH")],
         "presto": [BANDS.index("VV"), BANDS.index("VH")],
-    }
+    },
+    "S2": {
+        "predictor": [
+            S2_bands.index("B2"),
+            S2_bands.index("B3"),
+            S2_bands.index("B4"),
+            S2_bands.index("B5"),
+            S2_bands.index("B6"),
+            S2_bands.index("B7"),
+            S2_bands.index("B8"),
+            S2_bands.index("B8A"),
+            S2_bands.index("B11"),
+            S2_bands.index("B12"),
+        ],
+        "presto": [
+            BANDS.index("B2"),
+            BANDS.index("B3"),
+            BANDS.index("B4"),
+            BANDS.index("B5"),
+            BANDS.index("B6"),
+            BANDS.index("B7"),
+            BANDS.index("B8"),
+            BANDS.index("B8A"),
+            BANDS.index("B11"),
+            BANDS.index("B12"),
+        ],
+    },
+    "meteo": {
+        "predictor": [
+            meteo_bands.index("temperature"),
+            meteo_bands.index("precipitation"),
+        ],
+        "presto": [BANDS.index("temperature_2m"), BANDS.index("total_precipitation")],
+    },
+    "dem": {
+        "predictor": [dem_bands.index("elevation"), dem_bands.index("slope")],
+        "presto": [BANDS.index("elevation"), BANDS.index("slope")],
+    },
 }
 
 
