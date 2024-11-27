@@ -2,5 +2,5 @@ from unittest import TestCase
 
 
 class TestDataset(TestCase):
-    def placeholder_test(self):
+    def test_placeholder(self):
         pass
