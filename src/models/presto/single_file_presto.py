@@ -10,7 +10,6 @@ from torch import nn
 from torch.jit import Final
 from torch.nn import functional as F
 
-
 BANDS = [
     "VV",
     "VH",
@@ -402,30 +401,55 @@ class Encoder(nn.Module):
 
     @staticmethod
     def mask_tokens(x, mask):
-        summed = mask.sum(
-            dim=(1, 2)
-        )  # summed tells me the number of masked elements per batch idx
-        assert summed.max() == summed.min(), f"{summed.max()}, {summed.min()}"
+        mask = mask.bool()
 
-        batch_size = x.shape[0]
-        removed_elements_per_batch = int(summed.max() / mask.shape[2])
-        kept_elements_per_batch = x.shape[1] - removed_elements_per_batch
-        embedding_dim = x.shape[-1]
+        # https://stackoverflow.com/a/68621610/2332296
+        # move all non-masked values to the front of their rows
+        sorted_mask, indices = torch.sort((~mask).int(), dim=1, descending=True, stable=True)
+        x = x.gather(1, indices[:, :, None].expand_as(x))
+        # set masked values to 0 (not really necessary since we'll ignore them anyway)
+        x = x * sorted_mask.unsqueeze(-1)
 
-        # we want the mask to just be the indices of the masked tokens
-        indices = repeat(
-            torch.arange(0, x.shape[1]).long().to(x.device), "d -> b d", b=x.shape[0]
+        # cut off to the length of the longest sequence
+        max_length = sorted_mask.sum(-1).max()
+        x = x[:, :max_length]
+        updated_mask = 1 - sorted_mask[:, :max_length]
+
+        return x, indices, updated_mask
+
+    def add_masked_tokens_with_zeros(self, x, orig_indices, x_mask):
+        all_masked = torch.zeros((x.shape[0], orig_indices.shape[1], self.embedding_size), device=x.device)
+        mask = torch.cat(
+            (
+                x_mask,
+                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device),
+            ),
+            dim=-1,
         )
+        # can't set value on leaf variable
+        out = all_masked.clone()
+        # put tokens in full masked tensor (at the first N positions in every row)
+        out[~mask.bool()] = x[~x_mask.bool()]
+        # then move them to their original positions
+        out = out.scatter(1, orig_indices[:, :, None].expand_as(out), out)
+        return out
 
-        x = x[~mask.bool()].view(batch_size, kept_elements_per_batch, embedding_dim)
-
-        mask = mask[:, :, 0]
-        kept_indices = indices[~mask.bool()].view(batch_size, kept_elements_per_batch)
-        removed_indices = indices[mask.bool()].view(
-            batch_size, removed_elements_per_batch
-        )
-
-        return x, kept_indices, removed_indices
+    def rearrange_to_time(self, x: torch.Tensor, orig_mask: torch.Tensor, num_timesteps: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        # output of shape [b, num_timesteps, tokens_per_timestep, d]
+        output, output_mask = [], []
+        cur_start_timestep = 0
+        for channel_group, _ in self.band_groups.items():
+            if channel_group == "SRTM":
+                index = cur_start_timestep
+                output.append(repeat(x[:, index, :], "b d -> b t d", t=num_timesteps))
+                output_mask.append(repeat(orig_mask[:, index, :], "b d -> b t d", t=num_timesteps))
+                cur_start_timestep += 1
+            else:
+                indices = torch.arange(cur_start_timestep, cur_start_timestep + num_timesteps, device=x.device)
+                output.append(x[:, indices, :])
+                output_mask.append(orig_mask[:, indices, :])
+                cur_start_timestep += num_timesteps
+        return torch.stack(output, dim=-2), torch.stack(output_mask, dim=-2)
 
     def forward(
         self,
@@ -434,13 +458,13 @@ class Encoder(nn.Module):
         latlons: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         month: Union[torch.Tensor, int] = 0,
-        eval_task: bool = True,
+        eval_pooling: Optional[str] = None,
     ):
         device = x.device
 
         if mask is None:
             mask = torch.zeros_like(x, device=x.device).float()
-
+        num_timesteps = x.shape[1]
         months = month_to_tensor(month, x.shape[0], x.shape[1], device)
         month_embedding = self.month_embed(months)
         positional_embedding = repeat(
@@ -513,20 +537,41 @@ class Encoder(nn.Module):
 
         x = torch.cat(all_tokens, dim=1)  # [batch, timesteps, embedding_dim]
         mask = torch.cat(all_masks, dim=1)  # [batch, timesteps, embedding_dim]
-        x, kept_indices, removed_indices = self.mask_tokens(x, mask)
+        x, orig_indices, upd_mask = self.mask_tokens(x, mask)
 
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
         x = torch.cat((latlon_tokens, x), dim=1)
+        upd_mask = torch.cat((torch.zeros(x.shape[0])[:, None].to(device), upd_mask), dim=1)
+        orig_indices = torch.cat(
+            (torch.zeros(x.shape[0])[:, None].to(device).int(), orig_indices + 1),
+            dim=1,
+        )
 
         # apply Transformer blocks
         for blk in self.blocks:
-            x = blk(x)
+            x = blk(x, attn_mask=~upd_mask.bool())
 
         # mask will be a boolean of shape [batch, total_num_tokens]
-        if eval_task:
-            return self.norm(x.mean(dim=1))
-        return self.norm(x), kept_indices, removed_indices
+        if eval_pooling is not None:
+            if eval_pooling not in ("global", "time"):
+                raise ValueError(f"Expected eval_pooling to be one of 'global', 'time', got {eval_pooling}")
+            if eval_pooling == "global":
+                # set masked tokens to 0
+                x_for_mean = x * (1 - upd_mask.unsqueeze(-1))
+                x_mean = x_for_mean.sum(dim=1) / torch.sum(1 - upd_mask, -1, keepdim=True)
+                return self.norm(x_mean)
+            else:
+                filled_x = self.add_masked_tokens_with_zeros(x, orig_indices, upd_mask)
+                # remove the latlon token
+                x = x[:, 1:, :]
+                x_per_timestep, mask_per_timestep = self.rearrange_to_time(filled_x, mask, num_timesteps)
+                # x, mask have shape [b, timesteps, token_per_timesteps, dim]
+                x_for_mean = x_per_timestep * (1 - mask_per_timestep)
+                x_mean = x_for_mean.sum(dim=2) / torch.sum(1 - upd_mask, -2, keepdim=True)
+                return self.norm(x_mean)
+
+        return self.norm(x), orig_indices, upd_mask
 
 
 class Decoder(nn.Module):
@@ -546,12 +591,9 @@ class Decoder(nn.Module):
 
         # this is used for the channel embedding
         self.band_group_to_idx = {
-            group_name: idx
-            for idx, (group_name, _) in enumerate(self.band_groups.items())
+            group_name: idx for idx, (group_name, _) in enumerate(self.band_groups.items())
         }
-        self.band_group_to_idx["dynamic_world"] = (
-            max(self.band_group_to_idx.values()) + 1
-        )
+        self.band_group_to_idx["dynamic_world"] = max(self.band_group_to_idx.values()) + 1
 
         self.decoder_embed = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=True)
 
@@ -595,9 +637,7 @@ class Decoder(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-        pos_embed = get_sinusoid_encoding_table(
-            self.pos_embed.shape[1], self.pos_embed.shape[-1]
-        )
+        pos_embed = get_sinusoid_encoding_table(self.pos_embed.shape[1], self.pos_embed.shape[-1])
         self.pos_embed.data.copy_(pos_embed)
 
         # initialize nn.Linear and nn.LayerNorm
@@ -613,25 +653,22 @@ class Decoder(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def add_masked_tokens(self, x, kept_indices, removed_indices):
-        mask_tokens = repeat(
-            self.mask_token, "d -> b t d", b=x.shape[0], t=removed_indices.shape[1]
+    def add_masked_tokens(self, x, orig_indices, x_mask):
+        all_masked = repeat(self.mask_token, "d -> b t d", b=x.shape[0], t=orig_indices.shape[1])
+        mask = torch.cat(
+            (
+                x_mask,
+                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=device),
+            ),
+            dim=-1,
         )
-
-        x = torch.cat([x, mask_tokens], dim=1)
-
-        # sort according to their indices. Shape is [batch, index]
-        combined_indices = torch.cat([kept_indices, removed_indices], dim=1) + 1
-        # 0 for latlon index
-        combined_indices = torch.sort(
-            torch.cat(
-                [torch.zeros_like(combined_indices[:, 0:1]), combined_indices], dim=1
-            )
-        )[1]
-        # and then tile for each dimension
-        combined_indices = repeat(combined_indices, "b t -> b t d", d=x.shape[-1])
-        x = torch.gather(x, 1, combined_indices)
-        return x
+        # can't set value on leaf variable
+        out = all_masked.clone()
+        # put tokens in full masked tensor (at the first N positions in every row)
+        out[~mask.bool()] = x[~x_mask.bool()]
+        # then move them to their original positions
+        out = out.scatter(1, orig_indices[:, :, None].expand_as(out), out)
+        return out
 
     def add_embeddings(self, x, month: Union[torch.Tensor, int]):
         num_channel_groups = len(self.band_group_to_idx)
@@ -644,9 +681,7 @@ class Decoder(nn.Module):
         # when we expand the encodings, each channel_group gets num_timesteps
         # encodings. However, there is only one SRTM token so we remove the
         # excess SRTM encodings
-        remove_mask = torch.full(
-            size=(num_timesteps * num_channel_groups,), fill_value=False
-        )
+        remove_mask = torch.full(size=(num_timesteps * num_channel_groups,), fill_value=False)
         remove_mask[torch.arange(num_timesteps - 1) + srtm_index] = True
 
         month_embedding = repeat(
@@ -724,9 +759,9 @@ class Decoder(nn.Module):
         # is ordered
         return torch.cat(eo_output, dim=-1), cast(torch.Tensor, dw_output)
 
-    def forward(self, x, kept_indices, removed_indices, month):
+    def forward(self, x, orig_indices, x_mask, month):
         x = self.decoder_embed(x)
-        x = self.add_masked_tokens(x, kept_indices, removed_indices)
+        x = self.add_masked_tokens(x, orig_indices, x_mask)
         x = self.add_embeddings(x, month)
 
         # apply Transformer blocks
@@ -805,7 +840,7 @@ class Presto(nn.Module):
             latlons=latlons,
             mask=mask,
             month=month,
-            eval_task=False,
+            eval_pooling=None,
         )
 
         return self.decoder(x, kept_indices, removed_indices, month)

@@ -5,6 +5,7 @@ from .single_file_presto import (
     BANDS_ADD,
     BANDS_DIV,
     Encoder,
+    FinetuningHead
 )
 import numpy as np
 from src.predictors import (
@@ -19,7 +20,7 @@ from src.predictors import (
 from einops import repeat
 import warnings
 from torch import nn
-from typing import Union
+from typing import Union, Optional
 from functools import lru_cache
 import torch
 
@@ -210,9 +211,24 @@ def dataset_to_model(x: Predictors):
 
 
 class PretrainedPrestoWrapper(nn.Module):
-    def __init__(self):
+    def __init__(self, num_outputs: Optional[int] = None, regression: Optional[bool] = None):
         super().__init__()
         self.presto = Encoder()
+        # make sure the model is trainable, since we can call
+        # this having called requires_grad_(False)
+        self.presto.requires_grad_(True)
+        # but don't unfreeze the position encoder, which
+        # shouldn't be trainable
+        self.presto.pos_embed.requires_grad_(False)
+        self.presto.month_embed.requires_grad_(False)
+
+        head_variables = [num_outputs, regression]
+        if len([x for x in head_variables if x is not None]) != [0, len(head_variables)]:
+            raise ValueError("num_outputs and regression must both be None or not None")
+
+        self.head: Optional[nn.Module] = None
+        if num_outputs is not None:
+            self.head = FinetuningHead(hidden_size=self.presto.embedding_size, num_outputs=num_outputs, regression=regression)
 
     @classmethod
     @lru_cache(maxsize=6)
@@ -238,7 +254,15 @@ class PretrainedPrestoWrapper(nn.Module):
     def forward(self, x: Predictors):
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
 
-        return self.presto(
+        # labels should have shape [B, T or 1, outputs]
+        if x.label.shape[1] == dynamic_world.shape[1]:
+            eval_pooling = "time"
+        else:
+            if x.label.shape[1] != 1:
+                raise ValueError(f"Unexpected label shape {x.label.shape}")
+            eval_pooling = "global"
+
+        embeddings = self.presto(
             x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
             dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
             latlons=to_torchtensor(x.latlon, device=device).float(),
@@ -246,4 +270,9 @@ class PretrainedPrestoWrapper(nn.Module):
             month=x.month
             if isinstance(x.month, int)
             else to_torchtensor(x.month, device=device).long(),
+            eval_pooling=eval_pooling
         )
+        if self.head is not None:
+            return self.head(embeddings)
+        else:
+            return embeddings
