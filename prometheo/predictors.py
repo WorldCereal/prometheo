@@ -24,7 +24,7 @@ s2_bands = [
     "B12",
 ]
 
-meteo_bands = []
+# meteo_bands = []
 
 
 class Predictors(NamedTuple):
