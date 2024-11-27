@@ -223,7 +223,7 @@ class PretrainedPrestoWrapper(nn.Module):
         self.presto.month_embed.requires_grad_(False)
 
         head_variables = [num_outputs, regression]
-        if len([x for x in head_variables if x is not None]) != [0, len(head_variables)]:
+        if len([x for x in head_variables if x is not None]) not in [0, len(head_variables)]:
             raise ValueError("num_outputs and regression must both be None or not None")
 
         self.head: Optional[nn.Module] = None

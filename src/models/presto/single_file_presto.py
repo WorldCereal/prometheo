@@ -106,9 +106,7 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
-        self.fast_attn = hasattr(
-            torch.nn.functional, "scaled_dot_product_attention"
-        )  # FIXME
+        self.fast_attn = hasattr(torch.nn.functional, "scaled_dot_product_attention")  # FIXME
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
@@ -117,24 +115,27 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, attn_mask=None):
         B, N, C = x.shape
-        qkv = (
-            self.qkv(x)
-            .reshape(B, N, 3, self.num_heads, self.head_dim)
-            .permute(2, 0, 3, 1, 4)
-        )
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
         if self.fast_attn:
+            if attn_mask is not None:
+                # todo check
+                attn_mask = attn_mask[:, None, None].repeat((1, self.num_heads, N, 1))
             x = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
+                # a value of True indicates that the element should take part in attention
+                attn_mask=attn_mask,
                 dropout_p=self.attn_drop.p,
             )
         else:
+            if attn_mask is not None:
+                raise NotImplementedError
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
             attn = attn.softmax(dim=-1)
@@ -213,9 +214,7 @@ class Block(nn.Module):
             proj_drop=drop,
             norm_layer=norm_layer,
         )
-        self.ls1 = (
-            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        )
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
 
         self.norm2 = norm_layer(dim)
         self.mlp = Mlp(
@@ -224,12 +223,10 @@ class Block(nn.Module):
             act_layer=act_layer,
             drop=drop,
         )
-        self.ls2 = (
-            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
-        )
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
 
-    def forward(self, x):
-        x = x + self.ls1(self.attn(self.norm1(x)))
+    def forward(self, x, attn_mask=None):
+        x = x + self.ls1(self.attn(self.norm1(x), attn_mask))
         x = x + self.ls2(self.mlp(self.norm2(x)))
         return x
 
@@ -463,7 +460,7 @@ class Encoder(nn.Module):
         device = x.device
 
         if mask is None:
-            mask = torch.zeros_like(x, device=x.device).float()
+            mask = torch.zeros_like(x, device=x.device)
         num_timesteps = x.shape[1]
         months = month_to_tensor(month, x.shape[0], x.shape[1], device)
         month_embedding = self.month_embed(months)
@@ -482,9 +479,7 @@ class Encoder(nn.Module):
             channel_embedding = self.channel_embed(
                 torch.tensor(self.band_group_to_idx[channel_group]).long().to(device)
             )
-            channel_embedding = repeat(
-                channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1]
-            )
+            channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
             if channel_group == "SRTM":
                 # for SRTM, we reduce it to a single token instead of
                 # a token per timestep
@@ -506,11 +501,7 @@ class Encoder(nn.Module):
             tokens = tokens[:, indices]
             tokens += channel_wise_positional_embedding
             all_tokens.append(tokens)
-            group_mask = repeat(
-                torch.max(mask[:, indices, channel_idxs], dim=-1)[0],
-                "b t -> b t d",
-                d=tokens.shape[-1],
-            )
+            group_mask = torch.max(mask[:, indices, channel_idxs], dim=-1)[0]
             all_masks.append(group_mask)
 
         # then, dynamic world
@@ -518,9 +509,7 @@ class Encoder(nn.Module):
         channel_embedding = self.channel_embed(
             torch.tensor(self.band_group_to_idx["dynamic_world"]).long().to(device)
         )
-        channel_embedding = repeat(
-            channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1]
-        )
+        channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
         positional_embedding = torch.cat(
             (month_embedding, channel_embedding, positional_embedding), dim=-1
         )
@@ -528,15 +517,11 @@ class Encoder(nn.Module):
         all_tokens.append(tokens)
 
         # now we calculate the mask for these [b, t] tokens
-        group_mask = repeat(
-            dynamic_world == NUM_DYNAMIC_WORLD_CLASSES,
-            "b t -> b t d",
-            d=tokens.shape[-1],
-        )
+        group_mask = dynamic_world == NUM_DYNAMIC_WORLD_CLASSES
         all_masks.append(group_mask)
 
         x = torch.cat(all_tokens, dim=1)  # [batch, timesteps, embedding_dim]
-        mask = torch.cat(all_masks, dim=1)  # [batch, timesteps, embedding_dim]
+        mask = torch.cat(all_masks, dim=1)  # [batch, timesteps]
         x, orig_indices, upd_mask = self.mask_tokens(x, mask)
 
         # append latlon tokens

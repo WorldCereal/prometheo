@@ -2,6 +2,8 @@ import unittest
 from src.models import Presto
 from src.predictors import Predictors, S1_bands, S2_bands, meteo_bands, dem_bands
 import numpy as np
+import torch
+from einops import repeat
 
 
 class TestPresto(unittest.TestCase):
@@ -14,6 +16,7 @@ class TestPresto(unittest.TestCase):
             meteo=np.random.rand(b, t, len(meteo_bands)),
             dem=np.random.rand(b, h, w, len(dem_bands)),
             latlon=np.random.rand(b, 2),
+            label=np.ones((b, 1, 1)),
             month=6,
         )
         model = Presto()
@@ -29,3 +32,25 @@ class TestPresto(unittest.TestCase):
         )
         model = Presto()
         _ = model(x)
+
+    def test_add_masked_tokens_with_zeros(self):
+        model = Presto()
+        # [b=1, t=3, d=2]
+        input_x = repeat(
+            torch.tensor([[1, 2, 3]]).float(),
+            "b t -> b t d",
+            d=model.presto.embedding_size,
+        )
+        input_mask = torch.tensor([[0, 1, 0]])
+        x, orig_indices, upd_mask = model.presto.mask_tokens(input_x, input_mask)
+        filled_x = model.presto.add_masked_tokens_with_zeros(x, orig_indices, upd_mask)
+        self.assertTrue(
+            torch.equal(
+                filled_x,
+                repeat(
+                    torch.tensor([[1, 0, 3]]).float(),
+                    "b t -> b t d",
+                    d=model.presto.embedding_size,
+                ),
+            )
+        )
