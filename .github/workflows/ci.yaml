@@ -8,7 +8,7 @@ on:
 
 jobs:
   lint:
-    name: "Lint: code quality and formatting checks"
+    name: "Linting and Testing"
     runs-on: ubuntu-latest
     steps:
     - name: Clone repo
