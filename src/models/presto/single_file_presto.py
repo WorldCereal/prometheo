@@ -642,7 +642,7 @@ class Decoder(nn.Module):
         mask = torch.cat(
             (
                 x_mask,
-                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=device),
+                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device),
             ),
             dim=-1,
         )
