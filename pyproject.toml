@@ -36,8 +36,8 @@ dependencies = [
   ]
 
 [project.urls]
-"Homepage" = "https://github.com/WorldCereal/presto-beyond-worldcereal"
-"Bug Tracker" = "https://github.com/WorldCereal/presto-beyond-worldcereal/issues"
+"Homepage" = "https://github.com/WorldCereal/prometheo"
+"Bug Tracker" = "https://github.com/WorldCereal/prometheo/issues"
 
 [project.optional-dependencies]
 dev = [
