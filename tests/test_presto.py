@@ -20,7 +20,8 @@ class TestPresto(unittest.TestCase):
             month=6,
         )
         model = Presto()
-        _ = model(x)
+        output_embeddings = model(x)
+        self.assertEqual(output_embeddings.shape, (b, model.presto.embedding_size))
 
     def test_forward_from_predictor_with_s1_only(self):
         b, t, h, w = 8, 4, 1, 1
@@ -32,7 +33,8 @@ class TestPresto(unittest.TestCase):
             month=6,
         )
         model = Presto()
-        _ = model(x)
+        output_embeddings = model(x)
+        self.assertEqual(output_embeddings.shape, (b, model.presto.embedding_size))
 
     def test_add_masked_tokens_with_zeros(self):
         model = Presto()
@@ -69,4 +71,5 @@ class TestPresto(unittest.TestCase):
             month=6,
         )
         model = Presto()
-        _ = model(x)
+        output_embeddings = model(x)
+        self.assertEqual(output_embeddings.shape, (b, t, model.presto.embedding_size))
