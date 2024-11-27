@@ -439,14 +439,14 @@ class Encoder(nn.Module):
             if channel_group == "SRTM":
                 index = cur_start_timestep
                 output.append(repeat(x[:, index, :], "b d -> b t d", t=num_timesteps))
-                output_mask.append(repeat(orig_mask[:, index, :], "b d -> b t d", t=num_timesteps))
+                output_mask.append(repeat(orig_mask[:, index], "b -> b t", t=num_timesteps))
                 cur_start_timestep += 1
             else:
                 indices = torch.arange(cur_start_timestep, cur_start_timestep + num_timesteps, device=x.device)
                 output.append(x[:, indices, :])
-                output_mask.append(orig_mask[:, indices, :])
+                output_mask.append(orig_mask[:, indices])
                 cur_start_timestep += num_timesteps
-        return torch.stack(output, dim=-2), torch.stack(output_mask, dim=-2)
+        return torch.stack(output, dim=-2), torch.stack(output_mask, dim=-1)
 
     def forward(
         self,
@@ -523,7 +523,6 @@ class Encoder(nn.Module):
         x = torch.cat(all_tokens, dim=1)  # [batch, timesteps, embedding_dim]
         mask = torch.cat(all_masks, dim=1)  # [batch, timesteps]
         x, orig_indices, upd_mask = self.mask_tokens(x, mask)
-
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
         x = torch.cat((latlon_tokens, x), dim=1)
@@ -552,8 +551,8 @@ class Encoder(nn.Module):
                 x = x[:, 1:, :]
                 x_per_timestep, mask_per_timestep = self.rearrange_to_time(filled_x, mask, num_timesteps)
                 # x, mask have shape [b, timesteps, token_per_timesteps, dim]
-                x_for_mean = x_per_timestep * (1 - mask_per_timestep)
-                x_mean = x_for_mean.sum(dim=2) / torch.sum(1 - upd_mask, -2, keepdim=True)
+                x_for_mean = x_per_timestep * (1 - mask_per_timestep.unsqueeze(-1))
+                x_mean = x_for_mean.sum(dim=2) / torch.sum(1 - mask_per_timestep, -1, keepdim=True)
                 return self.norm(x_mean)
 
         return self.norm(x), orig_indices, upd_mask
