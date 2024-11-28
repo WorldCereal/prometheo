@@ -1,6 +1,8 @@
+from typing import List, NamedTuple, Optional, Union
+
 import numpy as np
 import torch
-from typing import List, NamedTuple, Optional, Union
+
 from src.utils import device
 
 NODATAVALUE = 65535
@@ -31,6 +33,9 @@ dem_bands = ["elevation", "slope"]
 
 
 ArrayTensor = Union[np.ndarray, torch.Tensor]
+EMPTY_TENSOR = torch.empty(0)  # Default placeholder for missing tensor data
+EMPTY_LIST = []  # Default placeholder for missing list data
+DEFAULT_INT = -1  # Default placeholder for missing integer values
 
 
 def to_torchtensor(x: ArrayTensor, device: torch.device = device):
@@ -40,13 +45,13 @@ def to_torchtensor(x: ArrayTensor, device: torch.device = device):
 
 
 class Predictors(NamedTuple):
-    s1: Optional[ArrayTensor] = None  # [B, H, W, T, len(S1_bands)]
-    s2: Optional[ArrayTensor] = None  # [B, H, W, T, len(S2_bands)]
-    meteo: Optional[ArrayTensor] = None  # [B, T, len(meteo_bands)]
-    dem: Optional[ArrayTensor] = None  # [B, H, W, len(dem)]
-    latlon: Optional[ArrayTensor] = None  # [B, 2]
+    s1: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, T, len(S1_bands)]
+    s2: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, T, len(S2_bands)]
+    meteo: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, T, len(meteo_bands)]
+    dem: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, len(dem)]
+    latlon: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
-    aux_inputs: Optional[List[ArrayTensor]] = None
+    aux_inputs: Optional[List[ArrayTensor]] = EMPTY_LIST
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[ArrayTensor] = None
-    month: Optional[Union[ArrayTensor, int]] = None
+    label: Optional[ArrayTensor] = EMPTY_TENSOR
+    month: Optional[Union[ArrayTensor, int]] = DEFAULT_INT

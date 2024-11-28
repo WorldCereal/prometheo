@@ -38,20 +38,22 @@ class ScaleAGDataset(DatasetBase):
     def __init__(
         self,
         dataframe: pd.DataFrame,
-        num_outputs: int,
-        num_timesteps: int,  #
+        num_timesteps: int,
         task_type: Literal["regression", "binary", "multiclass", "ssl"],
+        num_outputs: int,
         target_name: Optional[str] = None,
         compositing_window: Literal["dek", "monthly"] = "monthly",
         upper_bound: Optional[float] = None,
         lower_bound: Optional[float] = None,
     ):
-        super().__init__(dataframe, num_outputs, num_timesteps, task_type)
+        super().__init__(
+            dataframe,
+            num_timesteps,
+            task_type,
+            num_outputs,
+        )
         self.target_name = target_name
         self.compositing_window = compositing_window
-
-        # make sure that target_name is None for ssl
-        assert self.task_type == "ssl" & self.target_name is None
 
         # bound label values to valid range if upper and lower bounds are provided
         if task_type == "regression":
@@ -79,25 +81,25 @@ class ScaleAGDataset(DatasetBase):
 
         row_d = pd.Series.to_dict(row)
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
-        month = datetime.strptime(row_d["date"], "%Y-%m-%d").month
+        month = datetime.strptime(row_d["start_date"], "%Y-%m-%d").month
 
         # initialize sensor arrays filled with NODATAVALUE
         s1 = np.full(
             (1, 1, self.num_timesteps, len(S1_bands)),
             fill_value=NODATAVALUE,
-            dtype=np.uint16,
+            dtype=np.float32,
         )
         s2 = np.full(
             (1, 1, self.num_timesteps, len(S2_bands)),
             fill_value=NODATAVALUE,
-            dtype=np.uint16,
+            dtype=np.float32,
         )
         meteo = np.full(
             (self.num_timesteps, len(meteo_bands)),
             fill_value=NODATAVALUE,
-            dtype=np.uint16,
+            dtype=np.float32,
         )
-        dem = np.full((1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.uint16)
+        dem = np.full((1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.float32)
 
         # iterate over all bands and fill the corresponding arrays. convert to presto units if necessary
         for df_val, presto_val in self.BAND_MAPPING.items():
@@ -158,15 +160,15 @@ class ScaleAGDataset(DatasetBase):
 
     def get_target(self, row_d: pd.Series) -> int:
         if self.target_name is None:
-            return None
+            return
         else:
             target = int(row_d[self.target_name])
-            if self.task == "regression":
+            if self.task_type == "regression":
                 target = self.normalize_target(target)
             # convert classes to indices for multiclass
-            elif self.task == "multiclass":
+            elif self.task_type == "multiclass":
                 target = self.class_to_index[target]
-            return target
+            return np.array(target)
 
     def normalize_target(self, target):
         return (target - self.lower_bound) / (self.upper_bound - self.lower_bound)
