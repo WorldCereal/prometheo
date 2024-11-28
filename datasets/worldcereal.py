@@ -5,8 +5,14 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 from base import DatasetBase
-from src.predictors import (NODATAVALUE, Predictors, S1_bands, S2_bands,
-                            dem_bands, meteo_bands)
+from src.predictors import (
+    NODATAVALUE,
+    Predictors,
+    S1_bands,
+    S2_bands,
+    dem_bands,
+    meteo_bands,
+)
 
 logger = logging.getLogger("__main__")
 
@@ -183,7 +189,6 @@ required {num_timesteps}, got {len(timestep_positions)}"
             latlon=latlon,
             aux_inputs=[valid_month],
             month=month,
-            label=np.array([month]*12)
             )
 
 
