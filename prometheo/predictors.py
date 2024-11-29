@@ -2,7 +2,6 @@ from typing import List, NamedTuple, Optional, Union
 
 import numpy as np
 import torch
-
 from src.utils import device
 
 NODATAVALUE = 65535

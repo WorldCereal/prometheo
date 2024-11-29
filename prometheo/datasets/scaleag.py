@@ -3,16 +3,9 @@ from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
-
 from datasets.base import DatasetBase
-from src.predictors import (
-    NODATAVALUE,
-    Predictors,
-    S1_bands,
-    S2_bands,
-    dem_bands,
-    meteo_bands,
-)
+from src.predictors import (NODATAVALUE, Predictors, S1_bands, S2_bands,
+                            dem_bands, meteo_bands)
 
 
 class ScaleAGDataset(DatasetBase):
@@ -124,17 +117,20 @@ class ScaleAGDataset(DatasetBase):
             elif presto_val in dem_bands:
                 dem = self.openeo_to_presto_units(dem, presto_val, values, idx_valid)
 
-        return Predictors(
-            s1=np.array(s1),
-            s2=np.array(s2),
-            meteo=np.array(meteo),
-            dem=np.array(dem),
-            latlon=latlon,
-            label=self.get_target(row_d),
-            month=(
+        predictors_dict = {
+            "s1": s1,
+            "s2": s2,
+            "meteo": meteo,
+            "dem": dem,
+            "latlon": latlon,
+            "month": (
                 self.get_month_array(row) if self.compositing_window == "dek" else month
             ),
-        )
+        }
+        if self.task_type != "ssl":
+            predictors_dict["label"] = self.get_target(row_d)
+
+        return Predictors(**predictors_dict)
 
     def __getitem__(self, idx):
         # Get the sample
@@ -159,16 +155,13 @@ class ScaleAGDataset(DatasetBase):
         return np.array([d.month - 1 for d in date_vector])
 
     def get_target(self, row_d: pd.Series) -> int:
-        if self.target_name is None:
-            return
-        else:
-            target = int(row_d[self.target_name])
-            if self.task_type == "regression":
-                target = self.normalize_target(target)
-            # convert classes to indices for multiclass
-            elif self.task_type == "multiclass":
-                target = self.class_to_index[target]
-            return np.array(target)
+        target = int(row_d[self.target_name])
+        if self.task_type == "regression":
+            target = self.normalize_target(target)
+        # convert classes to indices for multiclass
+        elif self.task_type == "multiclass":
+            target = self.class_to_index[target]
+        return np.array(target)
 
     def normalize_target(self, target):
         return (target - self.lower_bound) / (self.upper_bound - self.lower_bound)

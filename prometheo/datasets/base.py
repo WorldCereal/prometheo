@@ -2,10 +2,9 @@ from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
-from src.predictors import NODATAVALUE
 from torch.utils.data import Dataset
 
-
+from src.predictors import NODATAVALUE
 
 class DatasetBase(Dataset):
 
