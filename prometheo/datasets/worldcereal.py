@@ -1,18 +1,23 @@
 import logging
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from base import DatasetBase
-
-from src.predictors import (NODATAVALUE, Predictors, S1_bands, S2_bands,
-                            dem_bands, meteo_bands)
+from prometheo.predictors import (
+    NODATAVALUE,
+    Predictors,
+    S1_bands,
+    S2_bands,
+    dem_bands,
+    meteo_bands,
+)
+from torch.utils.data import Dataset
 
 logger = logging.getLogger("__main__")
 
 
-class WorldCerealBase(DatasetBase):
+class WorldCerealDataset(Dataset):
     BAND_MAPPING = {
         "OPTICAL-B02-ts{}-10m": "B2",
         "OPTICAL-B03-ts{}-10m": "B3",
@@ -28,13 +33,45 @@ class WorldCerealBase(DatasetBase):
         "SAR-VV-ts{}-20m": "VV",
         "METEO-precipitation_flux-ts{}-100m": "precipitation",
         "METEO-temperature_mean-ts{}-100m": "temperature",
-        "DEM-alt-20m": "elevation", 
+        "DEM-alt-20m": "elevation",
         "DEM-slo-20m": "slope",
     }
 
+    task_type = "ssl"
+    num_outputs = None
+
+    def __init__(
+        self,
+        dataframe: pd.DataFrame,
+        num_timesteps: int = 12,
+    ):
+        """TODO: write documentation for this dataset
+
+        Parameters
+        ----------
+        dataframe : pd.DataFrame
+            _description_
+        num_timesteps : int, optional
+            _description_, by default 12
+        """
+        self.dataframe = dataframe.replace({np.nan: NODATAVALUE})
+        self.num_timesteps = num_timesteps
+
+    def __len__(self):
+        return self.dataframe.shape[0]
+
+    def __getitem__(self, idx):
+        row = self.dataframe.iloc[idx, :]
+        return self.get_predictors(row, num_timesteps=self.num_timesteps, is_ssl=True)
+
     @classmethod
     def get_timestep_positions(
-        cls, row_d: Dict, num_timesteps: int, augment: bool = False, is_ssl: bool = False, MIN_EDGE_BUFFER: int = 2
+        cls,
+        row_d: Dict,
+        num_timesteps: int,
+        augment: bool = False,
+        is_ssl: bool = False,
+        MIN_EDGE_BUFFER: int = 2,
     ) -> List[int]:
         available_timesteps = int(row_d["available_timesteps"])
 
@@ -45,7 +82,8 @@ class WorldCerealBase(DatasetBase):
                 valid_position = int(
                     np.random.choice(
                         range(
-                            num_timesteps // 2, (available_timesteps - num_timesteps // 2)
+                            num_timesteps // 2,
+                            (available_timesteps - num_timesteps // 2),
                         ),
                         1,
                     )
@@ -108,7 +146,9 @@ required {num_timesteps}, got {len(timestep_positions)}"
 
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
 
-        timestep_positions = cls.get_timestep_positions(row_d, num_timesteps=num_timesteps, augment=augment, is_ssl=is_ssl)
+        timestep_positions = cls.get_timestep_positions(
+            row_d, num_timesteps=num_timesteps, augment=augment, is_ssl=is_ssl
+        )
 
         if num_timesteps == 12:
             initial_start_date_position = pd.to_datetime(row_d["start_date"]).month
@@ -132,7 +172,9 @@ required {num_timesteps}, got {len(timestep_positions)}"
 
         # make sure that month for encoding gets shifted according to
         # the selected timestep positions. Also ensure circular indexing
-        month = (initial_start_date_position - 1 + timestep_positions[0]) % num_timesteps
+        month = (
+            initial_start_date_position - 1 + timestep_positions[0]
+        ) % num_timesteps
 
         # adding workaround for compatibility between Phase I and Phase II datasets.
         # (in Phase II, the relevant attribute name was changed to valid_time)
@@ -142,19 +184,35 @@ required {num_timesteps}, got {len(timestep_positions)}"
         elif "valid_time" in row_d.keys():
             valid_month = datetime.strptime(row_d["valid_time"], "%Y-%m-%d").month - 1
         else:
-            logger.error("Dataset does not contain neither valid_date, nor valid_time attribute.")
+            logger.error(
+                "Dataset does not contain neither valid_date, nor valid_time attribute."
+            )
 
-        s1 = np.full((1, 1, num_timesteps, len(S1_bands)), fill_value=NODATAVALUE, dtype=np.float32) # [B, H, W, T, len(S1_bands)]
-        s2 = np.full((1, 1, num_timesteps, len(S2_bands)), fill_value=NODATAVALUE, dtype=np.float32) # [B, H, W, T, len(S2_bands)]
-        meteo = np.full((num_timesteps, len(meteo_bands)), fill_value=NODATAVALUE, dtype=np.float32) # [B, T, len(meteo_bands)]
-        dem = np.full((1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.float32) # [B, H, W, len(dem_bands)]
+        s1 = np.full(
+            (1, 1, num_timesteps, len(S1_bands)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [H, W, T, len(S1_bands)]
+        s2 = np.full(
+            (1, 1, num_timesteps, len(S2_bands)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [H, W, T, len(S2_bands)]
+        meteo = np.full(
+            (num_timesteps, len(meteo_bands)), fill_value=NODATAVALUE, dtype=np.float32
+        )  # [T, len(meteo_bands)]
+        dem = np.full(
+            (1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.float32
+        )  # [H, W, len(dem_bands)]
 
         for df_val, presto_val in cls.BAND_MAPPING.items():
-            values = np.array([float(row_d[df_val.format(t)]) for t in timestep_positions])
+            values = np.array(
+                [float(row_d[df_val.format(t)]) for t in timestep_positions]
+            )
             # this occurs for the DEM values in one point in Fiji
             values = np.nan_to_num(values, nan=NODATAVALUE)
             idx_valid = values != NODATAVALUE
-            
+
             if presto_val in S2_bands:
                 s2[..., S2_bands.index(presto_val)] = values * idx_valid
             elif presto_val in S1_bands:
@@ -175,7 +233,7 @@ required {num_timesteps}, got {len(timestep_positions)}"
                 dem[..., dem_bands.index(presto_val)] = values
             else:
                 raise ValueError(f"Unknown band {presto_val}")
-            
+
         return Predictors(
             s1=s1,
             s2=s2,
@@ -184,10 +242,29 @@ required {num_timesteps}, got {len(timestep_positions)}"
             latlon=latlon,
             aux_inputs=[valid_month],
             month=month,
-            )
+        )
 
+
+class WorldCerealLabelledDataset(WorldCerealDataset):
+    def __init__(
+        self,
+        dataframe: pd.DataFrame,
+        num_timesteps: int,
+        task_type: Literal["binary", "multiclass", "regression"],
+        num_outputs: int,
+    ):
+
+        super().__init__(dataframe, num_timesteps, task_type, num_outputs)
+
+        assert self.task_type in [
+            "binary",
+            "multiclass",
+            "regression",
+        ], f"Invalid task type `{task_type}` for labelled dataset"
+
+        self.task_type = task_type
+        self.num_outputs = num_outputs
 
     def __getitem__(self, idx):
         row = self.dataframe.iloc[idx, :]
-        is_ssl = self.task_type == "ssl"
-        return self.get_predictors(row, num_timesteps=self.num_timesteps, is_ssl=is_ssl)
+        return self.get_predictors(row, num_timesteps=self.num_timesteps, is_ssl=False)

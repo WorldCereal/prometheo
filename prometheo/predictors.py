@@ -2,7 +2,9 @@ from typing import List, NamedTuple, Optional, Union
 
 import numpy as np
 import torch
-from src.utils import device
+
+# from prometheo.utils import device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 NODATAVALUE = 65535
 
