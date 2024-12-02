@@ -1,3 +1,3 @@
- # Prometheo
+ # PromethEO
  
 From Model to Impact.
