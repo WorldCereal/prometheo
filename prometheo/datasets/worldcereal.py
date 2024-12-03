@@ -252,15 +252,6 @@ class WorldCerealDataset(Dataset):
 
         return s1, s2, meteo, dem
 
-    def initialize_label(self, dtype=np.uint16):
-        label = np.full(
-            (self.num_timesteps, self.num_outputs),
-            fill_value=NODATAVALUE,
-            dtype=dtype,
-        )  # [T, num_outputs]
-
-        return label
-
 
 class WorldCerealLabelledDataset(WorldCerealDataset):
 
@@ -299,6 +290,15 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         )
 
         return Predictors(**inputs, label=label)
+
+    def initialize_label(self, dtype=np.uint16):
+        label = np.full(
+            (self.num_timesteps, self.num_outputs),
+            fill_value=NODATAVALUE,
+            dtype=dtype,
+        )  # [T, num_outputs]
+
+        return label
 
     def get_label(
         self, row_d: Dict, task_type: str = "cropland", valid_position: int = None
