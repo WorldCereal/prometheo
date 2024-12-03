@@ -1,7 +1,8 @@
-from typing import List, NamedTuple, Optional, Union
+from typing import NamedTuple, Optional, Union, Sequence, Dict
 
 import numpy as np
 import torch
+from torch.utils.data import default_collate
 
 # from prometheo.utils import device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,8 +35,6 @@ dem_bands = ["elevation", "slope"]
 
 
 ArrayTensor = Union[np.ndarray, torch.Tensor]
-EMPTY_TENSOR = torch.empty(0)  # Default placeholder for missing tensor data
-# EMPTY_LIST = []  # Default placeholder for missing list data
 DEFAULT_INT = -1  # Default placeholder for missing integer values
 
 
@@ -46,13 +45,30 @@ def to_torchtensor(x: ArrayTensor, device: torch.device = device):
 
 
 class Predictors(NamedTuple):
-    s1: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, T, len(S1_bands)]
-    s2: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, T, len(S2_bands)]
-    meteo: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, T, len(meteo_bands)]
-    dem: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, len(dem)]
-    latlon: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, 2]
+    s1: Optional[ArrayTensor] = None  # [B, H, W, T, len(S1_bands)]
+    s2: Optional[ArrayTensor] = None  # [B, H, W, T, len(S2_bands)]
+    meteo: Optional[ArrayTensor] = None  # [B, T, len(meteo_bands)]
+    dem: Optional[ArrayTensor] = None  # [B, H, W, len(dem)]
+    latlon: Optional[ArrayTensor] = None  # [B, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
-    aux_inputs: Optional[List[ArrayTensor]] = [EMPTY_TENSOR]
+    # for now we ignore them
+    # aux_inputs: Optional[List[ArrayTensor]] = None
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, T, num_outputs]
-    timestamps: Optional[ArrayTensor] = EMPTY_TENSOR
+    label: Optional[ArrayTensor] = None  # [B, H, W, T, num_outputs]
+    timestamps: Optional[ArrayTensor] = None
+
+    def as_dict(self, ignore_nones: bool = True):
+        return_dict = {}
+        for field in self._fields:
+            val = getattr(self, field)
+            if ignore_nones and (val is None):
+                continue
+            else:
+                return_dict[field] = val
+        return return_dict
+
+
+def collate_fn(batch: Sequence[Predictors]):
+    # we assume that the same values are consistently None
+    collated_dict = default_collate([i.as_dict(ignore_nones=True) for i in batch])
+    return Predictors(**collated_dict)
