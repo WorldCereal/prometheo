@@ -21,6 +21,8 @@ class TestDataset(TestCase):
         ds = WorldCerealDataset(df)
         dl = DataLoader(ds, batch_size=2)
         for batch in dl:
+            # TODO: for now timestamps are UINT16 format because
+            # default collate_fn cannot handle timestamp format.
             print(batch)
 
     def test_WorldCerealLabelledDataset(self):
