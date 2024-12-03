@@ -35,7 +35,7 @@ dem_bands = ["elevation", "slope"]
 
 ArrayTensor = Union[np.ndarray, torch.Tensor]
 EMPTY_TENSOR = torch.empty(0)  # Default placeholder for missing tensor data
-EMPTY_LIST = []  # Default placeholder for missing list data
+# EMPTY_LIST = []  # Default placeholder for missing list data
 DEFAULT_INT = -1  # Default placeholder for missing integer values
 
 
@@ -52,7 +52,7 @@ class Predictors(NamedTuple):
     dem: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, len(dem)]
     latlon: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
-    aux_inputs: Optional[List[ArrayTensor]] = EMPTY_LIST
+    aux_inputs: Optional[List[ArrayTensor]] = [EMPTY_TENSOR]
     # Label needs to always be 2D, with temporal dimension
     label: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, T, num_outputs]
     timestamps: Optional[ArrayTensor] = EMPTY_TENSOR

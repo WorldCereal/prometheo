@@ -301,7 +301,10 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         return label
 
     def get_label(
-        self, row_d: Dict, task_type: str = "cropland", valid_position: int = None
+        self,
+        row_d: Dict,
+        task_type: str = "cropland",
+        valid_position: Optional[int] = None,
     ) -> np.ndarray:
         """Get the label for the given row. Label is a 2D array based number
         of timesteps and number of outputs.
@@ -324,20 +327,20 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         """
 
         label = self.initialize_label()
-        valid_position = valid_position or np.arange(self.num_timesteps)
+        valid_idx = valid_position or np.arange(self.num_timesteps)
 
         if task_type == "cropland":
-            label[valid_position, :] = int(row_d["LANDCOVER_LABEL"] == 11)
+            label[valid_idx, :] = int(row_d["LANDCOVER_LABEL"] == 11)
         if task_type == "croptype":
             if self.return_hierarchical_labels:
-                label[valid_position, :] = [
+                label[valid_idx, :] = [
                     row_d["landcover_name"],
                     row_d["downstream_class"],
                 ]
             elif len(self.croptype_list) == 0:
-                label[valid_position, :] = row_d["downstream_class"]
+                label[valid_idx, :] = row_d["downstream_class"]
             else:
-                label[valid_position, :] = np.array(
+                label[valid_idx, :] = np.array(
                     row_d[self.croptype_list].astype(int).values
                 )
         return label

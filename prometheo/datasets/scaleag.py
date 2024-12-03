@@ -1,11 +1,17 @@
 from datetime import datetime, timedelta
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
 import pandas as pd
 from datasets.base import DatasetBase
-from src.predictors import (NODATAVALUE, Predictors, S1_bands, S2_bands,
-                            dem_bands, meteo_bands)
+from src.predictors import (
+    NODATAVALUE,
+    Predictors,
+    S1_bands,
+    S2_bands,
+    dem_bands,
+    meteo_bands,
+)
 
 
 class ScaleAGDataset(DatasetBase):
@@ -154,7 +160,7 @@ class ScaleAGDataset(DatasetBase):
 
         return np.array([d.month - 1 for d in date_vector])
 
-    def get_target(self, row_d: pd.Series) -> int:
+    def get_target(self, row_d: pd.Series) -> np.ndarray:
         target = int(row_d[self.target_name])
         if self.task_type == "regression":
             target = self.normalize_target(target)
