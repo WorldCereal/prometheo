@@ -293,10 +293,10 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
 
     def initialize_label(self, dtype=np.uint16):
         label = np.full(
-            (self.num_timesteps, self.num_outputs),
+            (1, 1, self.num_timesteps, self.num_outputs),
             fill_value=NODATAVALUE,
             dtype=dtype,
-        )  # [T, num_outputs]
+        )  # [H, W, T, num_outputs]
 
         return label
 
@@ -330,17 +330,17 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         valid_idx = valid_position or np.arange(self.num_timesteps)
 
         if task_type == "cropland":
-            label[valid_idx, :] = int(row_d["LANDCOVER_LABEL"] == 11)
+            label[0, 0, valid_idx, :] = int(row_d["LANDCOVER_LABEL"] == 11)
         if task_type == "croptype":
             if self.return_hierarchical_labels:
-                label[valid_idx, :] = [
+                label[0, 0, valid_idx, :] = [
                     row_d["landcover_name"],
                     row_d["downstream_class"],
                 ]
             elif len(self.croptype_list) == 0:
-                label[valid_idx, :] = row_d["downstream_class"]
+                label[0, 0, valid_idx, :] = row_d["downstream_class"]
             else:
-                label[valid_idx, :] = np.array(
+                label[0, 0, valid_idx, :] = np.array(
                     row_d[self.croptype_list].astype(int).values
                 )
         return label
