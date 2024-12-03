@@ -54,5 +54,5 @@ class Predictors(NamedTuple):
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
     aux_inputs: Optional[List[ArrayTensor]] = [EMPTY_TENSOR]
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, T, num_outputs]
+    label: Optional[ArrayTensor] = EMPTY_TENSOR  # [B, H, W, T, num_outputs]
     timestamps: Optional[ArrayTensor] = EMPTY_TENSOR
