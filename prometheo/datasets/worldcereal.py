@@ -4,6 +4,8 @@ from typing import Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from torch.utils.data import Dataset
+
 from prometheo.predictors import (
     NODATAVALUE,
     Predictors,
@@ -12,7 +14,6 @@ from prometheo.predictors import (
     dem_bands,
     meteo_bands,
 )
-from torch.utils.data import Dataset
 
 logger = logging.getLogger("__main__")
 
@@ -37,202 +38,191 @@ class WorldCerealDataset(Dataset):
         "DEM-slo-20m": "slope",
     }
 
-    task_type = "ssl"
-    num_outputs = None
-
     def __init__(
         self,
         dataframe: pd.DataFrame,
         num_timesteps: int = 12,
+        timestep_freq: str = "month",
+        task_type: Literal["ssl", "binary", "multiclass", "regression"] = "ssl",
+        num_outputs: Optional[int] = None,
+        augment: bool = False,
     ):
-        """TODO: write documentation for this dataset
+        """WorldCereal base dataset. This dataset is typically used for
+        self-supervised learning.
 
         Parameters
         ----------
         dataframe : pd.DataFrame
-            _description_
+            input dataframe containing the data
         num_timesteps : int, optional
-            _description_, by default 12
+            number of timesteps for a sample, by default 12
+        timestep_freq : str, optional. Should be one of ['month', 'dekad']
+            frequency of the timesteps, by default "month"
+        task_type : str, optional. One of ['ssl', 'binary', 'multiclass', 'regression']
+            type of the task, by default self-supervised learning "ssl"
+        num_outputs : int, optional
+            number of outputs for the task, by default None. If task_type is 'ssl',
+            the value of this parameter is ignored.
+        augment : bool, optional
+            whether to augment the data, by default False
         """
         self.dataframe = dataframe.replace({np.nan: NODATAVALUE})
         self.num_timesteps = num_timesteps
+
+        if timestep_freq not in ["month", "dekad"]:
+            raise NotImplementedError(
+                f"timestep_freq should be one of ['month', 'dekad']. Got `{timestep_freq}`"
+            )
+        self.timestep_freq = timestep_freq
+        self.task_type = task_type
+        self.num_outputs = num_outputs
+        self.is_ssl = task_type == "ssl"
+        self.augment = augment
 
     def __len__(self):
         return self.dataframe.shape[0]
 
     def __getitem__(self, idx):
         row = self.dataframe.iloc[idx, :]
-        return self.get_predictors(row, num_timesteps=self.num_timesteps, is_ssl=True)
 
-    @classmethod
+        # https://stackoverflow.com/questions/45783891/is-there-a-way-to-speed-up-the-pandas-getitem-getitem-axis-and-get-label
+        # This is faster than indexing the series every time!
+        row_d = pd.Series.to_dict(row)
+
+        timestep_positions, valid_position = self.get_timestep_positions(row_d)
+
+        return self.get_predictors(row_d, timestep_positions)
+
     def get_timestep_positions(
-        cls,
+        self,
         row_d: Dict,
-        num_timesteps: int,
-        augment: bool = False,
-        is_ssl: bool = False,
         MIN_EDGE_BUFFER: int = 2,
-    ) -> List[int]:
-        available_timesteps = int(row_d["available_timesteps"])
+    ) -> Tuple[List[int], int]:
 
-        if is_ssl:
-            if available_timesteps == num_timesteps:
-                valid_position = int(num_timesteps // 2)
+        available_timesteps = int(row_d["available_timesteps"])
+        valid_position = int(row_d["valid_position"])
+
+        # Get the center point to use for extracting a sequence of timesteps
+        center_point = self._get_center_point(
+            available_timesteps, valid_position, self.augment, MIN_EDGE_BUFFER
+        )
+
+        # Determine the timestep positions to extract
+        last_timestep = min(available_timesteps, center_point + self.num_timesteps // 2)
+        first_timestep = max(0, last_timestep - self.num_timesteps)
+        timestep_positions = list(range(first_timestep, last_timestep))
+
+        # Sanity check to make sure we will extract the correct number of timesteps
+        if len(timestep_positions) != self.num_timesteps:
+            raise ValueError(
+                (
+                    "Acquired timestep positions do not have correct length: "
+                    f"required {self.num_timesteps}, got {len(timestep_positions)}"
+                )
+            )
+
+        # Sanity check to make sure valid_position is still within the extracted timesteps
+        assert (
+            valid_position in timestep_positions
+        ), f"Valid position {valid_position} not in timestep positions {timestep_positions}"
+
+        return timestep_positions, valid_position
+
+    def _get_center_point(
+        self, available_timesteps, valid_position, augment, min_edge_buffer
+    ):
+        """Helper method to decide on the center point based on which to
+        extract the timesteps."""
+
+        if not augment:
+            #  check if the valid position is too close to the start_date and force shifting it
+            if valid_position < self.num_timesteps // 2:
+                center_point = self.num_timesteps // 2
+            #  or too close to the end_date
+            elif valid_position > (available_timesteps - self.num_timesteps // 2):
+                center_point = available_timesteps - self.num_timesteps // 2
             else:
-                valid_position = int(
+                # Center the timesteps around the valid position
+                center_point = valid_position
+        else:
+            if self.is_ssl:
+                # Take a random center point enabling horizontal jittering
+                center_point = int(
                     np.random.choice(
                         range(
-                            num_timesteps // 2,
-                            (available_timesteps - num_timesteps // 2),
+                            self.num_timesteps // 2,
+                            (available_timesteps - self.num_timesteps // 2),
                         ),
                         1,
                     )
                 )
-            center_point = valid_position
-        else:
-            valid_position = int(row_d["valid_position"])
-            if not augment:
-                #  check if the valid position is too close to the start_date and force shifting it
-                if valid_position < num_timesteps // 2:
-                    center_point = num_timesteps // 2
-                #  or too close to the end_date
-                elif valid_position > (available_timesteps - num_timesteps // 2):
-                    center_point = available_timesteps - num_timesteps // 2
-                else:
-                    # Center the timesteps around the valid position
-                    center_point = valid_position
             else:
-                # Shift the center point but make sure the resulting range
+                # Randomly shift the center point but make sure the resulting range
                 # well includes the valid position
 
                 min_center_point = max(
-                    num_timesteps // 2,
-                    valid_position + MIN_EDGE_BUFFER - num_timesteps // 2,
+                    self.num_timesteps // 2,
+                    valid_position + min_edge_buffer - self.num_timesteps // 2,
                 )
                 max_center_point = min(
-                    available_timesteps - num_timesteps // 2,
-                    valid_position - MIN_EDGE_BUFFER + num_timesteps // 2,
+                    available_timesteps - self.num_timesteps // 2,
+                    valid_position - min_edge_buffer + self.num_timesteps // 2,
                 )
 
                 center_point = np.random.randint(
                     min_center_point, max_center_point + 1
                 )  # max_center_point included
 
-        last_timestep = min(available_timesteps, center_point + num_timesteps // 2)
-        first_timestep = max(0, last_timestep - num_timesteps)
-        timestep_positions = list(range(first_timestep, last_timestep))
+        return center_point
 
-        if len(timestep_positions) != num_timesteps:
-            raise ValueError(
-                f"Acquired timestep positions do not have correct length: \
-required {num_timesteps}, got {len(timestep_positions)}"
-            )
-        assert (
-            valid_position in timestep_positions
-        ), f"Valid position {valid_position} not in timestep positions {timestep_positions}"
-        return timestep_positions
+    def _get_timestamps(self, row_d: Dict, timestep_positions: List[int]) -> np.ndarray:
+        start_date = pd.to_datetime(row_d["start_date"])
+        end_date = pd.to_datetime(row_d["end_date"])
+        if self.timestep_freq == "month":
+            timestamps = pd.date_range(start=start_date, end=end_date, freq="MS")
+        elif self.timestep_freq == "dekad":
+            timestamps = get_dekad_date_range(start_date, end_date)
+        else:
+            raise NotImplementedError()
+        return timestamps[timestep_positions].to_numpy()
 
-    @classmethod
-    def get_predictors(
-        cls,
-        row: pd.Series,
-        num_timesteps: int,
-        augment: bool = False,
-        is_ssl: bool = False,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, int]:
-        # https://stackoverflow.com/questions/45783891/is-there-a-way-to-speed-up-the-pandas-getitem-getitem-axis-and-get-label
-        # This is faster than indexing the series every time!
-        row_d = pd.Series.to_dict(row)
+    def get_predictors(self, row_d: Dict, timestep_positions: List[int]) -> Predictors:
 
+        # Get latlons
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
 
-        timestep_positions = cls.get_timestep_positions(
-            row_d, num_timesteps=num_timesteps, augment=augment, is_ssl=is_ssl
-        )
+        # Get timestamps belonging to each timestep
+        timestamps = self._get_timestamps(row_d, timestep_positions)
 
-        if num_timesteps == 12:
-            initial_start_date_position = pd.to_datetime(row_d["start_date"]).month
-        elif num_timesteps > 12:
-            # get the correct index of the start_date based on num_timesteps`
-            # e.g. if num_timesteps is 36 (dekadal setup), we should take the correct
-            # 10-day interval that the start_date falls into
-            # TODO: 1) this needs to go into a separate function
-            # 2) definition of valid_position and timestep_ind
-            #  should also be changed accordingly
-            year = pd.to_datetime(row_d["start_date"]).year
-            year_dates = pd.date_range(start=f"{year}-01-01", end=f"{year}-12-31")
-            bins = pd.cut(year_dates, bins=num_timesteps, labels=False)
-            initial_start_date_position = bins[
-                np.where(year_dates == pd.to_datetime(row_d["start_date"]))[0][0]
-            ]
-        else:
-            raise ValueError(
-                f"num_timesteps must be at least 12. Currently it is {num_timesteps}"
-            )
+        # Initialize predictors
+        s1, s2, meteo, dem = self.initialize_predictors()
 
-        # make sure that month for encoding gets shifted according to
-        # the selected timestep positions. Also ensure circular indexing
-        month = (
-            initial_start_date_position - 1 + timestep_positions[0]
-        ) % num_timesteps
-
-        # adding workaround for compatibility between Phase I and Phase II datasets.
-        # (in Phase II, the relevant attribute name was changed to valid_time)
-        # once we fully move to Phase II data, this should be replaced to valid_tome only.
-        if "valid_date" in row_d.keys():
-            valid_month = datetime.strptime(row_d["valid_date"], "%Y-%m-%d").month - 1
-        elif "valid_time" in row_d.keys():
-            valid_month = datetime.strptime(row_d["valid_time"], "%Y-%m-%d").month - 1
-        else:
-            logger.error(
-                "Dataset does not contain neither valid_date, nor valid_time attribute."
-            )
-
-        s1 = np.full(
-            (1, 1, num_timesteps, len(S1_bands)),
-            fill_value=NODATAVALUE,
-            dtype=np.float32,
-        )  # [H, W, T, len(S1_bands)]
-        s2 = np.full(
-            (1, 1, num_timesteps, len(S2_bands)),
-            fill_value=NODATAVALUE,
-            dtype=np.float32,
-        )  # [H, W, T, len(S2_bands)]
-        meteo = np.full(
-            (num_timesteps, len(meteo_bands)), fill_value=NODATAVALUE, dtype=np.float32
-        )  # [T, len(meteo_bands)]
-        dem = np.full(
-            (1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.float32
-        )  # [H, W, len(dem_bands)]
-
-        for df_val, presto_val in cls.BAND_MAPPING.items():
+        # Fill predictors
+        for src_attr, dst_atr in self.BAND_MAPPING.items():
             values = np.array(
-                [float(row_d[df_val.format(t)]) for t in timestep_positions]
+                [float(row_d[src_attr.format(t)]) for t in timestep_positions]
             )
-            # this occurs for the DEM values in one point in Fiji
-            values = np.nan_to_num(values, nan=NODATAVALUE)
             idx_valid = values != NODATAVALUE
-
-            if presto_val in S2_bands:
-                s2[..., S2_bands.index(presto_val)] = values * idx_valid
-            elif presto_val in S1_bands:
+            if dst_atr in S2_bands:
+                s2[..., S2_bands.index(dst_atr)] = values
+            elif dst_atr in S1_bands:
                 # convert to dB
                 idx_valid = idx_valid & (values > 0)
                 values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
-                s1[..., S1_bands.index(presto_val)] = values * idx_valid
-            elif presto_val == "precipitation":
-                # scaling, and AgERA5 is in mm, Presto expects m
+                s1[..., S1_bands.index(dst_atr)] = values
+            elif dst_atr == "precipitation":
+                # scaling, and AgERA5 is in mm, prometheo convention expects m
                 values[idx_valid] = values[idx_valid] / (100 * 1000.0)
-                meteo[..., meteo_bands.index(presto_val)] = values * idx_valid
-            elif presto_val == "temperature":
+                meteo[..., meteo_bands.index(dst_atr)] = values
+            elif dst_atr == "temperature":
                 # remove scaling
                 values[idx_valid] = values[idx_valid] / 100
-                meteo[..., meteo_bands.index(presto_val)] = values * idx_valid
-            elif presto_val in dem_bands:
+                meteo[..., meteo_bands.index(dst_atr)] = values
+            elif dst_atr in dem_bands:
                 values = values[0]  # dem is not temporal
-                dem[..., dem_bands.index(presto_val)] = values
+                dem[..., dem_bands.index(dst_atr)] = values
             else:
-                raise ValueError(f"Unknown band {presto_val}")
+                raise ValueError(f"Unknown band {dst_atr}")
 
         return Predictors(
             s1=s1,
@@ -240,9 +230,33 @@ required {num_timesteps}, got {len(timestep_positions)}"
             meteo=meteo,
             dem=dem,
             latlon=latlon,
-            aux_inputs=[valid_month],
-            month=month,
+            # timestamps=timestamps,
+            timestamps=timestamps.astype(
+                np.int64
+            ),  # TODO: parse true datetimes once DataLoader can handle this!!
         )
+
+    def initialize_predictors(self):
+        s1 = np.full(
+            (1, 1, self.num_timesteps, len(S1_bands)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [H, W, T, len(S1_bands)]
+        s2 = np.full(
+            (1, 1, self.num_timesteps, len(S2_bands)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [H, W, T, len(S2_bands)]
+        meteo = np.full(
+            (self.num_timesteps, len(meteo_bands)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [T, len(meteo_bands)]
+        dem = np.full(
+            (1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.float32
+        )  # [H, W, len(dem_bands)]
+
+        return s1, s2, meteo, dem
 
 
 class WorldCerealLabelledDataset(WorldCerealDataset):
@@ -252,9 +266,10 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         num_timesteps: int,
         task_type: Literal["binary", "multiclass", "regression"],
         num_outputs: int,
+        augment: bool = False,
     ):
 
-        super().__init__(dataframe, num_timesteps, task_type, num_outputs)
+        super().__init__(dataframe, num_timesteps, augment=augment)
 
         assert self.task_type in [
             "binary",
@@ -268,3 +283,101 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
     def __getitem__(self, idx):
         row = self.dataframe.iloc[idx, :]
         return self.get_predictors(row, num_timesteps=self.num_timesteps, is_ssl=False)
+
+
+def get_dekad_date_range(start, end):
+    return pd.DatetimeIndex(
+        [_dekad_startdate_from_date(t) for t in _dekad_index(start, end)]
+    )
+
+
+def _dekad_index(begin, end):
+    """Creates a pandas datetime index on a dekadal basis.
+    Returns end date for each dekad.
+    Based on: https://pytesmo.readthedocs.io/en/7.1/_modules/pytesmo/timedate/dekad.html  # NOQA
+
+    Parameters
+    ----------
+    begin : datetime
+        Datetime index start date.
+    end : datetime, optional
+        Datetime index end date, set to current date if None.
+
+    Returns
+    -------
+    dtindex : pandas.DatetimeIndex
+        Dekadal datetime index.
+    """
+
+    import calendar
+
+    begin = pd.to_datetime(begin)
+    end = pd.to_datetime(end)
+
+    mon_begin = datetime(begin.year, begin.month, 1)
+    mon_end = datetime(end.year, end.month, 1)
+
+    daterange = pd.date_range(mon_begin, mon_end, freq="MS")
+
+    dates = []
+
+    for i, dat in enumerate(daterange):
+        lday = calendar.monthrange(dat.year, dat.month)[1]
+        if i == 0 and begin.day > 1:
+            if begin.day < 11:
+                if daterange.size == 1:
+                    if end.day < 11:
+                        dekads = [10]
+                    elif end.day >= 11 and end.day < 21:
+                        dekads = [10, 20]
+                    else:
+                        dekads = [10, 20, lday]
+                else:
+                    dekads = [10, 20, lday]
+            elif begin.day >= 11 and begin.day < 21:
+                if daterange.size == 1:
+                    if end.day < 21:
+                        dekads = [20]
+                    else:
+                        dekads = [20, lday]
+                else:
+                    dekads = [20, lday]
+            else:
+                dekads = [lday]
+        elif i == (len(daterange) - 1) and end.day < 21:
+            if end.day < 11:
+                dekads = [10]
+            else:
+                dekads = [10, 20]
+        else:
+            dekads = [10, 20, lday]
+
+        for j in dekads:
+            dates.append(datetime(dat.year, dat.month, j))
+
+    dtindex = pd.DatetimeIndex(dates)
+
+    return dtindex
+
+
+def _dekad_startdate_from_date(dt_in):
+    """
+    dekadal startdate that a date falls in
+    Based on: https://pytesmo.readthedocs.io/en/7.1/_modules/pytesmo/timedate/dekad.html  # NOQA
+
+    Parameters
+    ----------
+    run_dt: datetime.datetime
+
+    Returns
+    -------
+    startdate: datetime.datetime
+        startdate of dekad
+    """
+    if dt_in.day <= 10:
+        startdate = datetime(dt_in.year, dt_in.month, 1, 0, 0, 0)
+    if dt_in.day >= 11 and dt_in.day <= 20:
+        startdate = datetime(dt_in.year, dt_in.month, 11, 0, 0, 0)
+    if dt_in.day >= 21:
+        startdate = datetime(dt_in.year, dt_in.month, 21, 0, 0, 0)
+    return startdate
