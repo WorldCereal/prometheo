@@ -83,15 +83,9 @@ class WorldCerealDataset(Dataset):
         return self.dataframe.shape[0]
 
     def __getitem__(self, idx):
-        row = self.dataframe.iloc[idx, :]
-
-        # https://stackoverflow.com/questions/45783891/is-there-a-way-to-speed-up-the-pandas-getitem-getitem-axis-and-get-label
-        # This is faster than indexing the series every time!
-        row_d = pd.Series.to_dict(row)
-
-        timestep_positions, valid_position = self.get_timestep_positions(row_d)
-
-        return self.get_predictors(row_d, timestep_positions)
+        row = pd.Series.to_dict(self.dataframe.iloc[idx, :])
+        timestep_positions, _ = self.get_timestep_positions(row)
+        return Predictors(**self.get_inputs(row, timestep_positions))
 
     def get_timestep_positions(
         self,
@@ -186,7 +180,7 @@ class WorldCerealDataset(Dataset):
             raise NotImplementedError()
         return timestamps[timestep_positions].to_numpy()
 
-    def get_predictors(self, row_d: Dict, timestep_positions: List[int]) -> Predictors:
+    def get_inputs(self, row_d: Dict, timestep_positions: List[int]) -> dict:
 
         # Get latlons
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
@@ -194,10 +188,10 @@ class WorldCerealDataset(Dataset):
         # Get timestamps belonging to each timestep
         timestamps = self._get_timestamps(row_d, timestep_positions)
 
-        # Initialize predictors
-        s1, s2, meteo, dem = self.initialize_predictors()
+        # Initialize inputs
+        s1, s2, meteo, dem = self.initialize_inputs()
 
-        # Fill predictors
+        # Fill inputs
         for src_attr, dst_atr in self.BAND_MAPPING.items():
             values = np.array(
                 [float(row_d[src_attr.format(t)]) for t in timestep_positions]
@@ -224,7 +218,7 @@ class WorldCerealDataset(Dataset):
             else:
                 raise ValueError(f"Unknown band {dst_atr}")
 
-        return Predictors(
+        return dict(
             s1=s1,
             s2=s2,
             meteo=meteo,
@@ -236,7 +230,7 @@ class WorldCerealDataset(Dataset):
             ),  # TODO: parse true datetimes once DataLoader can handle this!!
         )
 
-    def initialize_predictors(self):
+    def initialize_inputs(self):
         s1 = np.full(
             (1, 1, self.num_timesteps, len(S1_bands)),
             fill_value=NODATAVALUE,
@@ -258,31 +252,95 @@ class WorldCerealDataset(Dataset):
 
         return s1, s2, meteo, dem
 
+    def initialize_label(self, dtype=np.uint16):
+        label = np.full(
+            (self.num_timesteps, self.num_outputs),
+            fill_value=NODATAVALUE,
+            dtype=dtype,
+        )  # [T, num_outputs]
+
+        return label
+
 
 class WorldCerealLabelledDataset(WorldCerealDataset):
+
+    FILTER_LABELS = [0, 10]
+
     def __init__(
         self,
-        dataframe: pd.DataFrame,
-        num_timesteps: int,
-        task_type: Literal["binary", "multiclass", "regression"],
-        num_outputs: int,
-        augment: bool = False,
+        dataframe,
+        task_type: Literal["binary", "multiclass", "regression"] = "binary",
+        num_outputs: int = 1,
+        croptype_list: List = [],
+        return_hierarchical_labels: bool = False,
+        **kwargs,
     ):
 
-        super().__init__(dataframe, num_timesteps, augment=augment)
-
-        assert self.task_type in [
+        assert task_type in [
             "binary",
             "multiclass",
             "regression",
         ], f"Invalid task type `{task_type}` for labelled dataset"
 
-        self.task_type = task_type
-        self.num_outputs = num_outputs
+        dataframe = dataframe.loc[~dataframe.LANDCOVER_LABEL.isin(self.FILTER_LABELS)]
+
+        super().__init__(
+            dataframe, task_type=task_type, num_outputs=num_outputs, **kwargs
+        )
+        self.croptype_list = croptype_list
+        self.return_hierarchical_labels = return_hierarchical_labels
 
     def __getitem__(self, idx):
-        row = self.dataframe.iloc[idx, :]
-        return self.get_predictors(row, num_timesteps=self.num_timesteps, is_ssl=False)
+        row = pd.Series.to_dict(self.dataframe.iloc[idx, :])
+        timestep_positions, valid_position = self.get_timestep_positions(row)
+        inputs = self.get_inputs(row, timestep_positions)
+        label = self.get_label(
+            row, "cropland", valid_position=valid_position - timestep_positions[0]
+        )
+
+        return Predictors(**inputs, label=label)
+
+    def get_label(
+        self, row_d: Dict, task_type: str = "cropland", valid_position: int = None
+    ) -> np.ndarray:
+        """Get the label for the given row. Label is a 2D array based number
+        of timesteps and number of outputs.
+
+        Parameters
+        ----------
+        row_d : Dict
+            input row as a dictionary
+        task_type : str, optional
+            task type to infer labels from, by default "cropland"
+        valid_position : int, optional
+            validity position of the label, by default None.
+            If provided, only the label at the corresponding timestep will be
+            set while other timesteps will be set to NODATAVALUE.
+
+        Returns
+        -------
+        np.ndarray
+            label array
+        """
+
+        label = self.initialize_label()
+        valid_position = valid_position or np.arange(self.num_timesteps)
+
+        if task_type == "cropland":
+            label[valid_position, :] = int(row_d["LANDCOVER_LABEL"] == 11)
+        if task_type == "croptype":
+            if self.return_hierarchical_labels:
+                label[valid_position, :] = [
+                    row_d["landcover_name"],
+                    row_d["downstream_class"],
+                ]
+            elif len(self.croptype_list) == 0:
+                label[valid_position, :] = row_d["downstream_class"]
+            else:
+                label[valid_position, :] = np.array(
+                    row_d[self.croptype_list].astype(int).values
+                )
+        return label
 
 
 def get_dekad_date_range(start, end):
