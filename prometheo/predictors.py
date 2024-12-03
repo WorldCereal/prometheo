@@ -55,4 +55,4 @@ class Predictors(NamedTuple):
     aux_inputs: Optional[List[ArrayTensor]] = EMPTY_LIST
     # Label needs to always be 2D, with temporal dimension
     label: Optional[ArrayTensor] = EMPTY_TENSOR
-    month: Optional[Union[ArrayTensor, int]] = DEFAULT_INT
+    timestamps: Optional[ArrayTensor] = EMPTY_TENSOR
