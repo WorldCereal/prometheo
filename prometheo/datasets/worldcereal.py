@@ -7,12 +7,12 @@ import pandas as pd
 from torch.utils.data import Dataset
 
 from prometheo.predictors import (
+    DEM_BANDS,
+    METEO_BANDS,
     NODATAVALUE,
+    S1_BANDS,
+    S2_BANDS,
     Predictors,
-    S1_bands,
-    S2_bands,
-    dem_bands,
-    meteo_bands,
 )
 
 logger = logging.getLogger("__main__")
@@ -197,24 +197,24 @@ class WorldCerealDataset(Dataset):
                 [float(row_d[src_attr.format(t)]) for t in timestep_positions]
             )
             idx_valid = values != NODATAVALUE
-            if dst_atr in S2_bands:
-                s2[..., S2_bands.index(dst_atr)] = values
-            elif dst_atr in S1_bands:
+            if dst_atr in S2_BANDS:
+                s2[..., S2_BANDS.index(dst_atr)] = values
+            elif dst_atr in S1_BANDS:
                 # convert to dB
                 idx_valid = idx_valid & (values > 0)
                 values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
-                s1[..., S1_bands.index(dst_atr)] = values
+                s1[..., S1_BANDS.index(dst_atr)] = values
             elif dst_atr == "precipitation":
                 # scaling, and AgERA5 is in mm, prometheo convention expects m
                 values[idx_valid] = values[idx_valid] / (100 * 1000.0)
-                meteo[..., meteo_bands.index(dst_atr)] = values
+                meteo[..., METEO_BANDS.index(dst_atr)] = values
             elif dst_atr == "temperature":
                 # remove scaling
                 values[idx_valid] = values[idx_valid] / 100
-                meteo[..., meteo_bands.index(dst_atr)] = values
-            elif dst_atr in dem_bands:
+                meteo[..., METEO_BANDS.index(dst_atr)] = values
+            elif dst_atr in DEM_BANDS:
                 values = values[0]  # dem is not temporal
-                dem[..., dem_bands.index(dst_atr)] = values
+                dem[..., DEM_BANDS.index(dst_atr)] = values
             else:
                 raise ValueError(f"Unknown band {dst_atr}")
 
@@ -232,23 +232,23 @@ class WorldCerealDataset(Dataset):
 
     def initialize_inputs(self):
         s1 = np.full(
-            (1, 1, self.num_timesteps, len(S1_bands)),
+            (1, 1, self.num_timesteps, len(S1_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
-        )  # [H, W, T, len(S1_bands)]
+        )  # [H, W, T, len(S1_BANDS)]
         s2 = np.full(
-            (1, 1, self.num_timesteps, len(S2_bands)),
+            (1, 1, self.num_timesteps, len(S2_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
-        )  # [H, W, T, len(S2_bands)]
+        )  # [H, W, T, len(S2_BANDS)]
         meteo = np.full(
-            (self.num_timesteps, len(meteo_bands)),
+            (self.num_timesteps, len(METEO_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
-        )  # [T, len(meteo_bands)]
+        )  # [T, len(METEO_BANDS)]
         dem = np.full(
-            (1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.float32
-        )  # [H, W, len(dem_bands)]
+            (1, 1, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32
+        )  # [H, W, len(DEM_BANDS)]
 
         return s1, s2, meteo, dem
 
