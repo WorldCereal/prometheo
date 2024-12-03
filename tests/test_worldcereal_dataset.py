@@ -2,8 +2,12 @@ from pathlib import Path
 from unittest import TestCase
 
 import pandas as pd
-from prometheo.datasets.worldcereal import WorldCerealDataset
 from torch.utils.data import DataLoader
+
+from prometheo.datasets.worldcereal import (
+    WorldCerealDataset,
+    WorldCerealLabelledDataset,
+)
 
 
 def load_dataframe():
@@ -15,6 +19,13 @@ class TestDataset(TestCase):
     def test_WorldCerealDataset(self):
         df = load_dataframe()
         ds = WorldCerealDataset(df)
-        dl = DataLoader(ds, batch_size=1)
+        dl = DataLoader(ds, batch_size=2)
+        for batch in dl:
+            print(batch)
+
+    def test_WorldCerealLabelledDataset(self):
+        df = load_dataframe()
+        ds = WorldCerealLabelledDataset(df, augment=True)
+        dl = DataLoader(ds, batch_size=2)
         for batch in dl:
             print(batch)
