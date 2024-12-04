@@ -291,7 +291,7 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
 
         return Predictors(**inputs, label=label)
 
-    def initialize_label(self, dtype=np.uint16):
+    def initialize_label(self, dtype=np.int16):
         label = np.full(
             (1, 1, self.num_timesteps, self.num_outputs),
             fill_value=NODATAVALUE,
