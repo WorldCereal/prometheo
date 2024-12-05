@@ -5,7 +5,7 @@ from .single_file_presto import (
     BANDS_ADD,
     BANDS_DIV,
     Encoder,
-    FinetuningHead
+    FinetuningHead,
 )
 import numpy as np
 from prometheo.predictors import (
@@ -211,7 +211,9 @@ def dataset_to_model(x: Predictors):
 
 
 class PretrainedPrestoWrapper(nn.Module):
-    def __init__(self, num_outputs: Optional[int] = None, regression: Optional[bool] = None):
+    def __init__(
+        self, num_outputs: Optional[int] = None, regression: Optional[bool] = None
+    ):
         super().__init__()
         self.presto = Encoder()
         # make sure the model is trainable, since we can call
@@ -223,14 +225,21 @@ class PretrainedPrestoWrapper(nn.Module):
         self.presto.month_embed.requires_grad_(False)
 
         head_variables = [num_outputs, regression]
-        if len([x for x in head_variables if x is not None]) not in [0, len(head_variables)]:
+        if len([x for x in head_variables if x is not None]) not in [
+            0,
+            len(head_variables),
+        ]:
             raise ValueError("num_outputs and regression must both be None or not None")
 
         self.head: Optional[nn.Module] = None
         if num_outputs is not None:
             if regression is None:
                 raise ValueError("regression cannot be None if num_outputs is not None")
-            self.head = FinetuningHead(hidden_size=self.presto.embedding_size, num_outputs=num_outputs, regression=regression)
+            self.head = FinetuningHead(
+                hidden_size=self.presto.embedding_size,
+                num_outputs=num_outputs,
+                regression=regression,
+            )
 
     @classmethod
     @lru_cache(maxsize=6)
@@ -269,16 +278,16 @@ class PretrainedPrestoWrapper(nn.Module):
         else:
             eval_pooling = "global"
 
-        if x.month is None:
-            raise ValueError("Presto requires input months")
+        if x.timestamps is None:
+            raise ValueError("Presto requires input timestamps")
 
         embeddings = self.presto(
             x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
             dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
             latlons=to_torchtensor(x.latlon, device=device).float(),
             mask=to_torchtensor(mask, device=device).long(),
-            month=to_torchtensor(x.month[:, :, 1], device=device),
-            eval_pooling=eval_pooling
+            month=to_torchtensor(x.timestamps[:, :, 1], device=device),
+            eval_pooling=eval_pooling,
         )
         if self.head is not None:
             return self.head(embeddings)
