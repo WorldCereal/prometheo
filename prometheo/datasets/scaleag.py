@@ -77,7 +77,6 @@ class ScaleAGDataset(DatasetBase):
             }
 
     def get_predictors(self, row: pd.Series) -> Predictors:
-
         row_d = pd.Series.to_dict(row)
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
         month = datetime.strptime(row_d["start_date"], "%Y-%m-%d").month
@@ -144,9 +143,10 @@ class ScaleAGDataset(DatasetBase):
         return self.get_predictors(row)
 
     def get_month_array(self, row: pd.Series) -> np.ndarray:
-        start_date, end_date = datetime.strptime(
-            row.start_date, "%Y-%m-%d"
-        ), datetime.strptime(row.end_date, "%Y-%m-%d")
+        start_date, end_date = (
+            datetime.strptime(row.start_date, "%Y-%m-%d"),
+            datetime.strptime(row.end_date, "%Y-%m-%d"),
+        )
 
         # Calculate the step size for 10-day intervals and create a list of dates
         step = int((end_date - start_date).days / (self.num_timesteps - 1))

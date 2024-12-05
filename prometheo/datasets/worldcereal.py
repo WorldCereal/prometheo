@@ -92,7 +92,6 @@ class WorldCerealDataset(Dataset):
         row_d: Dict,
         MIN_EDGE_BUFFER: int = 2,
     ) -> Tuple[List[int], int]:
-
         available_timesteps = int(row_d["available_timesteps"])
         valid_position = int(row_d["valid_position"])
 
@@ -181,7 +180,6 @@ class WorldCerealDataset(Dataset):
         return timestamps[timestep_positions].to_numpy()
 
     def get_inputs(self, row_d: Dict, timestep_positions: List[int]) -> dict:
-
         # Get latlons
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
 
@@ -254,7 +252,6 @@ class WorldCerealDataset(Dataset):
 
 
 class WorldCerealLabelledDataset(WorldCerealDataset):
-
     FILTER_LABELS = [0, 10]
 
     def __init__(
@@ -266,7 +263,6 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         return_hierarchical_labels: bool = False,
         **kwargs,
     ):
-
         assert task_type in [
             "binary",
             "multiclass",

@@ -8,7 +8,7 @@ from prometheo.datasets.worldcereal import (
     WorldCerealDataset,
     WorldCerealLabelledDataset,
 )
-from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, Predictors
+from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
 
 
 def load_dataframe(timestep_freq="month"):
@@ -26,7 +26,7 @@ class TestDataset(TestCase):
         df = load_dataframe()
         ds = WorldCerealDataset(df)
         batch_size = 2
-        dl = DataLoader(ds, batch_size=batch_size)
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
         assert batch.s1.shape == (batch_size, 1, 1, 12, len(S1_BANDS))
         assert batch.s2.shape == (batch_size, 1, 1, 12, len(S2_BANDS))
@@ -40,7 +40,7 @@ class TestDataset(TestCase):
         df = load_dataframe(timestep_freq="dekad")
         ds = WorldCerealDataset(df, num_timesteps=36, timestep_freq="dekad")
         batch_size = 2
-        dl = DataLoader(ds, batch_size=batch_size)
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
         assert batch.s1.shape == (batch_size, 1, 1, 36, len(S1_BANDS))
         assert batch.s2.shape == (batch_size, 1, 1, 36, len(S2_BANDS))
@@ -53,7 +53,7 @@ class TestDataset(TestCase):
         df = load_dataframe()
         ds = WorldCerealLabelledDataset(df, augment=True)
         batch_size = 2
-        dl = DataLoader(ds, batch_size=batch_size)
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
         assert batch.s1.shape == (batch_size, 1, 1, 12, len(S1_BANDS))
         assert batch.s2.shape == (batch_size, 1, 1, 12, len(S2_BANDS))
@@ -70,10 +70,14 @@ class TestDataset(TestCase):
         num_outputs = 2
         num_timesteps = 24
         ds = WorldCerealLabelledDataset(
-            df, num_timesteps=num_timesteps, timestep_freq="dekad", num_outputs=num_outputs, augment=True
+            df,
+            num_timesteps=num_timesteps,
+            timestep_freq="dekad",
+            num_outputs=num_outputs,
+            augment=True,
         )
         batch_size = 2
-        dl = DataLoader(ds, batch_size=batch_size)
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
         assert batch.s1.shape == (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
         assert batch.s2.shape == (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
