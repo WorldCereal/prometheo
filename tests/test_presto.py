@@ -18,7 +18,7 @@ class TestPresto(unittest.TestCase):
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, 2),
             label=np.ones((b, 1, 1)),
-            month=6,
+            timestamps=repeat(np.array([2020, 1, 1]), "d -> b t d", b=b, t=t),
         )
         model = Presto()
         output_embeddings = model(x)
@@ -31,7 +31,7 @@ class TestPresto(unittest.TestCase):
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             latlon=np.random.rand(b, 2),
             label=np.ones((b, 1, 1)),
-            month=6,
+            timestamps=repeat(np.array([2020, 1, 1]), "d -> b t d", b=b, t=t),
         )
         model = Presto()
         output_embeddings = model(x)
@@ -69,7 +69,7 @@ class TestPresto(unittest.TestCase):
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, 2),
             label=np.ones((b, t, 1)),
-            month=6,
+            timestamps=repeat(np.array([2020, 1, 1]), "d -> b t d", b=b, t=t),
         )
         model = Presto()
         output_embeddings = model(x)
