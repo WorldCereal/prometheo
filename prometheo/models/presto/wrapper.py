@@ -228,6 +228,8 @@ class PretrainedPrestoWrapper(nn.Module):
 
         self.head: Optional[nn.Module] = None
         if num_outputs is not None:
+            if regression is None:
+                raise ValueError("regression cannot be None if num_outputs is not None")
             self.head = FinetuningHead(hidden_size=self.presto.embedding_size, num_outputs=num_outputs, regression=regression)
 
     @classmethod
@@ -254,22 +256,28 @@ class PretrainedPrestoWrapper(nn.Module):
     def forward(self, x: Predictors):
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
 
-        # labels should have shape [B, T or 1, outputs]
-        if x.label.shape[1] == dynamic_world.shape[1]:
-            eval_pooling = "time"
+        # labels should have shape [B, T or 1, outputs].
+        # need some way to communicate global vs time if
+        # they are not passed as part of the predictors.
+        if x.label is not None:
+            if x.label.shape[1] == dynamic_world.shape[1]:
+                eval_pooling = "time"
+            else:
+                if x.label.shape[1] != 1:
+                    raise ValueError(f"Unexpected label shape {x.label.shape}")
+                eval_pooling = "global"
         else:
-            if x.label.shape[1] != 1:
-                raise ValueError(f"Unexpected label shape {x.label.shape}")
             eval_pooling = "global"
+
+        if x.month is None:
+            raise ValueError("Presto requires input months")
 
         embeddings = self.presto(
             x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
             dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
             latlons=to_torchtensor(x.latlon, device=device).float(),
             mask=to_torchtensor(mask, device=device).long(),
-            month=x.month
-            if isinstance(x.month, int)
-            else to_torchtensor(x.month, device=device).long(),
+            month=to_torchtensor(x.month[:, :, 1], device=device),
             eval_pooling=eval_pooling
         )
         if self.head is not None:

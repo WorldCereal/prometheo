@@ -28,12 +28,12 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        assert batch.s1.shape == (batch_size, 1, 1, 12, len(S1_BANDS))
-        assert batch.s2.shape == (batch_size, 1, 1, 12, len(S2_BANDS))
-        assert batch.meteo.shape == (batch_size, 12, len(METEO_BANDS))
-        assert batch.timestamps.shape == (batch_size, 12)
-        assert batch.latlon.shape == (batch_size, 2)
-        assert batch.dem.shape == (batch_size, 1, 1, len(DEM_BANDS))
+        self.assertEqual(batch.s1.shape, (batch_size, 1, 1, 12, len(S1_BANDS)))
+        self.assertEqual(batch.s2.shape, (batch_size, 1, 1, 12, len(S2_BANDS)))
+        self.assertEqual(batch.meteo.shape, (batch_size, 12, len(METEO_BANDS)))
+        self.assertEqual(batch.timestamps.shape, (batch_size, 12, 3))
+        self.assertEqual(batch.latlon.shape, (batch_size, 2))
+        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
     def test_WorldCerealDataset_10D(self):
         # Test dekadal version of worldcereal dataset
@@ -42,12 +42,12 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        assert batch.s1.shape == (batch_size, 1, 1, 36, len(S1_BANDS))
-        assert batch.s2.shape == (batch_size, 1, 1, 36, len(S2_BANDS))
-        assert batch.meteo.shape == (batch_size, 36, len(METEO_BANDS))
-        assert batch.timestamps.shape == (batch_size, 36)
-        assert batch.latlon.shape == (batch_size, 2)
-        assert batch.dem.shape == (batch_size, 1, 1, len(DEM_BANDS))
+        self.assertEqual(batch.s1.shape, (batch_size, 1, 1, 12, len(S1_BANDS)))
+        self.assertEqual(batch.s2.shape, (batch_size, 1, 1, 12, len(S2_BANDS)))
+        self.assertEqual(batch.meteo.shape, (batch_size, 12, len(METEO_BANDS)))
+        self.assertEqual(batch.timestamps.shape, (batch_size, 12, 3))
+        self.assertEqual(batch.latlon.shape, (batch_size, 2))
+        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
     def test_WorldCerealLabelledDataset(self):
         df = load_dataframe()
@@ -55,13 +55,13 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        assert batch.s1.shape == (batch_size, 1, 1, 12, len(S1_BANDS))
-        assert batch.s2.shape == (batch_size, 1, 1, 12, len(S2_BANDS))
-        assert batch.meteo.shape == (batch_size, 12, len(METEO_BANDS))
-        assert batch.timestamps.shape == (batch_size, 12)
-        assert batch.latlon.shape == (batch_size, 2)
-        assert batch.dem.shape == (batch_size, 1, 1, len(DEM_BANDS))
-        assert batch.label.shape == (batch_size, 1, 1, 12, 1)
+        self.assertEqual(batch.s1.shape, (batch_size, 1, 1, 12, len(S1_BANDS)))
+        self.assertEqual(batch.s2.shape, (batch_size, 1, 1, 12, len(S2_BANDS)))
+        self.assertEqual(batch.meteo.shape, (batch_size, 12, len(METEO_BANDS)))
+        self.assertEqual(batch.timestamps.shape, (batch_size, 12, 3))
+        self.assertEqual(batch.latlon.shape, (batch_size, 2))
+        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
+        self.assertEqual(batch.label.shape, (batch_size, 1, 1, 12, 1))
 
     def test_WorldCerealLabelledDataset_10D(self):
         # Test dekadal version of labelled worldcereal dataset
@@ -79,10 +79,18 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        assert batch.s1.shape == (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
-        assert batch.s2.shape == (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
-        assert batch.meteo.shape == (batch_size, num_timesteps, len(METEO_BANDS))
-        assert batch.timestamps.shape == (batch_size, num_timesteps)
-        assert batch.latlon.shape == (batch_size, 2)
-        assert batch.dem.shape == (batch_size, 1, 1, len(DEM_BANDS))
-        assert batch.label.shape == (batch_size, 1, 1, num_timesteps, num_outputs)
+        self.assertEqual(
+            batch.s1.shape, (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
+        )
+        self.assertEqual(
+            batch.s2.shape, (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
+        )
+        self.assertEqual(
+            batch.meteo.shape, (batch_size, num_timesteps, len(METEO_BANDS))
+        )
+        self.assertEqual(batch.timestamps.shape, (batch_size, num_timesteps, 3))
+        self.assertEqual(batch.latlon.shape, (batch_size, 2))
+        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
+        self.assertEqual(
+            batch.label.shape, (batch_size, 1, 1, num_timesteps, num_outputs)
+        )

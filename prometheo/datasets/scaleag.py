@@ -142,7 +142,7 @@ class ScaleAGDataset(DatasetBase):
         row = self.dataframe.iloc[idx, :]
         return self.get_predictors(row)
 
-    def get_month_array(self, row: pd.Series) -> np.ndarray:
+    def get_date_array(self, row: pd.Series) -> np.ndarray:
         start_date, end_date = (
             datetime.strptime(row.start_date, "%Y-%m-%d"),
             datetime.strptime(row.end_date, "%Y-%m-%d"),
@@ -157,8 +157,11 @@ class ScaleAGDataset(DatasetBase):
         # Ensure last date is not beyond the end date
         if date_vector[-1] > end_date:
             date_vector[-1] = end_date
-
-        return np.array([d.month - 1 for d in date_vector])
+        return np.stack(
+            np.array([d.day - 1 for d in date_vector]),
+            np.array([d.month - 1 for d in date_vector]),
+            np.array([d.year - 1 for d in date_vector]),
+        )
 
     def get_target(self, row_d: pd.Series) -> np.ndarray:
         target = int(row_d[self.target_name])
