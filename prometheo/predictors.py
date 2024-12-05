@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Union, Sequence, Dict
+from typing import NamedTuple, Optional, Union, Sequence
 
 import numpy as np
 import torch
@@ -13,9 +13,9 @@ NODATAVALUE = 65535
 # NEED THOROUGH AND PRECISE DOCUMENTATION AND TESTS!!!
 # checks should be implemented at the test level
 # here, we need to fix the exted ranges for the bands
-S1_bands = ["VV", "VH"]
-S1_bands_units = ["dB", "dB"]  # TODO for all other bands
-S2_bands = [
+S1_BANDS = ["VV", "VH"]
+S1_BANDS_UNITS = ["dB", "dB"]  # TODO for all other bands
+S2_BANDS = [
     "B1",
     "B2",
     "B3",
@@ -30,8 +30,8 @@ S2_bands = [
     "B11",
     "B12",
 ]
-meteo_bands = ["temperature", "precipitation"]
-dem_bands = ["elevation", "slope"]
+METEO_BANDS = ["temperature", "precipitation"]
+DEM_BANDS = ["elevation", "slope"]
 
 
 ArrayTensor = Union[np.ndarray, torch.Tensor]

@@ -5,12 +5,12 @@ import numpy as np
 import pandas as pd
 from datasets.base import DatasetBase
 from src.predictors import (
+    DEM_BANDS,
+    METEO_BANDS,
     NODATAVALUE,
+    S1_BANDS,
+    S2_BANDS,
     Predictors,
-    S1_bands,
-    S2_bands,
-    dem_bands,
-    meteo_bands,
 )
 
 
@@ -77,28 +77,27 @@ class ScaleAGDataset(DatasetBase):
             }
 
     def get_predictors(self, row: pd.Series) -> Predictors:
-
         row_d = pd.Series.to_dict(row)
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
         month = datetime.strptime(row_d["start_date"], "%Y-%m-%d").month
 
         # initialize sensor arrays filled with NODATAVALUE
         s1 = np.full(
-            (1, 1, self.num_timesteps, len(S1_bands)),
+            (1, 1, self.num_timesteps, len(S1_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
         )
         s2 = np.full(
-            (1, 1, self.num_timesteps, len(S2_bands)),
+            (1, 1, self.num_timesteps, len(S2_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
         )
         meteo = np.full(
-            (self.num_timesteps, len(meteo_bands)),
+            (self.num_timesteps, len(METEO_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
         )
-        dem = np.full((1, 1, len(dem_bands)), fill_value=NODATAVALUE, dtype=np.float32)
+        dem = np.full((1, 1, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32)
 
         # iterate over all bands and fill the corresponding arrays. convert to presto units if necessary
         for df_val, presto_val in self.BAND_MAPPING.items():
@@ -108,9 +107,9 @@ class ScaleAGDataset(DatasetBase):
             )
             values = np.nan_to_num(values, nan=NODATAVALUE)
             idx_valid = values != NODATAVALUE
-            if presto_val in S2_bands:
-                s2[..., S2_bands.index(presto_val)] = values
-            elif presto_val in S1_bands:
+            if presto_val in S2_BANDS:
+                s2[..., S2_BANDS.index(presto_val)] = values
+            elif presto_val in S1_BANDS:
                 s1 = self.openeo_to_presto_units(s1, presto_val, values, idx_valid)
             elif presto_val == "precipitation":
                 meteo = self.openeo_to_presto_units(
@@ -120,7 +119,7 @@ class ScaleAGDataset(DatasetBase):
                 meteo = self.openeo_to_presto_units(
                     meteo, presto_val, values, idx_valid
                 )
-            elif presto_val in dem_bands:
+            elif presto_val in DEM_BANDS:
                 dem = self.openeo_to_presto_units(dem, presto_val, values, idx_valid)
 
         predictors_dict = {
@@ -144,9 +143,10 @@ class ScaleAGDataset(DatasetBase):
         return self.get_predictors(row)
 
     def get_month_array(self, row: pd.Series) -> np.ndarray:
-        start_date, end_date = datetime.strptime(
-            row.start_date, "%Y-%m-%d"
-        ), datetime.strptime(row.end_date, "%Y-%m-%d")
+        start_date, end_date = (
+            datetime.strptime(row.start_date, "%Y-%m-%d"),
+            datetime.strptime(row.end_date, "%Y-%m-%d"),
+        )
 
         # Calculate the step size for 10-day intervals and create a list of dates
         step = int((end_date - start_date).days / (self.num_timesteps - 1))
@@ -176,22 +176,22 @@ class ScaleAGDataset(DatasetBase):
         return target_norm * (self.upper_bound - self.lower_bound) + self.lower_bound
 
     def openeo_to_presto_units(self, band_array, presto_band, values, idx_valid):
-        if presto_band in S1_bands:
+        if presto_band in S1_BANDS:
             # convert to dB
             idx_valid = idx_valid & (values > 0)
             values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
-            band_array[..., S1_bands.index(presto_band)] = values * idx_valid
+            band_array[..., S1_BANDS.index(presto_band)] = values * idx_valid
 
         elif presto_band == "precipitation":
             # scaling, and AgERA5 is in mm, Presto expects m
             values[idx_valid] = values[idx_valid] / (100 * 1000.0)
-            band_array[..., meteo_bands.index(presto_band)] = values * idx_valid
+            band_array[..., METEO_BANDS.index(presto_band)] = values * idx_valid
 
         elif presto_band == "temperature":
             # remove scaling. conversion to celsius is done in the normalization
             values[idx_valid] = values[idx_valid] / 100
-            band_array[..., meteo_bands.index(presto_band)] = values * idx_valid
-        elif presto_band in dem_bands:
-            band_array[..., dem_bands.index(presto_band)] = values[0]
+            band_array[..., METEO_BANDS.index(presto_band)] = values * idx_valid
+        elif presto_band in DEM_BANDS:
+            band_array[..., DEM_BANDS.index(presto_band)] = values[0]
 
         return band_array
