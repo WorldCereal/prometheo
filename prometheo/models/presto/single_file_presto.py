@@ -10,6 +10,66 @@ from torch import nn
 from torch.jit import Final
 from torch.nn import functional as F
 
+BANDS = [
+    "VV",
+    "VH",
+    "B2",
+    "B3",
+    "B4",
+    "B5",
+    "B6",
+    "B7",
+    "B8",
+    "B8A",
+    "B11",
+    "B12",
+    "temperature_2m",
+    "total_precipitation",
+    "elevation",
+    "slope",
+    "NDVI",
+]
+BANDS_ADD = [
+    25.0,
+    25.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    # shift to celcius
+    -272.15,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+]
+BANDS_DIV = [
+    25.0,
+    25.0,
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    float(1e4),
+    # empirically, temp ranges from 37 to -22 degrees celcius
+    35.0,
+    # empirically assessed
+    0.03,
+    2000.0,
+    50.0,
+    1.0,
+]
 BANDS_GROUPS_IDX = OrderedDict(
     [
         ("S1", [0, 1]),
@@ -55,20 +115,27 @@ class Attention(nn.Module):
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
-    def forward(self, x):
+    def forward(self, x, attn_mask=None):
         B, N, C = x.shape
         qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
         if self.fast_attn:
+            if attn_mask is not None:
+                # todo check
+                attn_mask = attn_mask[:, None, None].repeat((1, self.num_heads, N, 1))
             x = F.scaled_dot_product_attention(
                 q,
                 k,
                 v,
+                # a value of True indicates that the element should take part in attention
+                attn_mask=attn_mask,
                 dropout_p=self.attn_drop.p,
             )
         else:
+            if attn_mask is not None:
+                raise NotImplementedError
             q = q * self.scale
             attn = q @ k.transpose(-2, -1)
             attn = attn.softmax(dim=-1)
@@ -158,8 +225,8 @@ class Block(nn.Module):
         )
         self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
 
-    def forward(self, x):
-        x = x + self.ls1(self.attn(self.norm1(x)))
+    def forward(self, x, attn_mask=None):
+        x = x + self.ls1(self.attn(self.norm1(x), attn_mask))
         x = x + self.ls2(self.mlp(self.norm2(x)))
         return x
 
@@ -221,7 +288,10 @@ def month_to_tensor(
         )
     elif len(month.shape) == 1:
         month = torch.stack(
-            [torch.fmod(torch.arange(m, m + seq_len, dtype=torch.long), 12) for m in month]
+            [
+                torch.fmod(torch.arange(m, m + seq_len, dtype=torch.long), 12)
+                for m in month
+            ]
         ).to(device)
     return month
 
@@ -244,9 +314,12 @@ class Encoder(nn.Module):
 
         # this is used for the channel embedding
         self.band_group_to_idx = {
-            group_name: idx for idx, (group_name, _) in enumerate(self.band_groups.items())
+            group_name: idx
+            for idx, (group_name, _) in enumerate(self.band_groups.items())
         }
-        self.band_group_to_idx["dynamic_world"] = max(self.band_group_to_idx.values()) + 1
+        self.band_group_to_idx["dynamic_world"] = (
+            max(self.band_group_to_idx.values()) + 1
+        )
 
         self.eo_patch_embed = nn.ModuleDict(
             {
@@ -275,7 +348,9 @@ class Encoder(nn.Module):
 
         # the positional + monthly + channel embedding
         self.max_sequence_length = max_sequence_length
-        pos_embedding_size = int(embedding_size * (1 - (channel_embed_ratio + month_embed_ratio)))
+        pos_embedding_size = int(
+            embedding_size * (1 - (channel_embed_ratio + month_embed_ratio))
+        )
         channel_embedding_size = int(embedding_size * channel_embed_ratio)
         month_embedding_size = int(embedding_size * month_embed_ratio)
         self.pos_embed = nn.Parameter(
@@ -284,14 +359,16 @@ class Encoder(nn.Module):
         month_tab = get_month_encoding_table(month_embedding_size)
         self.month_embed = nn.Embedding.from_pretrained(month_tab, freeze=True)
         self.channel_embed = nn.Embedding(
-            num_embeddings=len(self.band_groups) + 1, embedding_dim=channel_embedding_size
+            num_embeddings=len(self.band_groups) + 1,
+            embedding_dim=channel_embedding_size,
         )
 
         self.initialize_weights()
 
     def initialize_weights(self):
-
-        pos_embed = get_sinusoid_encoding_table(self.pos_embed.shape[1], self.pos_embed.shape[-1])
+        pos_embed = get_sinusoid_encoding_table(
+            self.pos_embed.shape[1], self.pos_embed.shape[-1]
+        )
         self.pos_embed.data.copy_(pos_embed)
 
         # initialize nn.Linear and nn.LayerNorm
@@ -321,26 +398,55 @@ class Encoder(nn.Module):
 
     @staticmethod
     def mask_tokens(x, mask):
-        summed = mask.sum(
-            dim=(1, 2)
-        )  # summed tells me the number of masked elements per batch idx
-        assert summed.max() == summed.min(), f"{summed.max()}, {summed.min()}"
+        mask = mask.bool()
 
-        batch_size = x.shape[0]
-        removed_elements_per_batch = int(summed.max() / mask.shape[2])
-        kept_elements_per_batch = x.shape[1] - removed_elements_per_batch
-        embedding_dim = x.shape[-1]
+        # https://stackoverflow.com/a/68621610/2332296
+        # move all non-masked values to the front of their rows
+        sorted_mask, indices = torch.sort((~mask).int(), dim=1, descending=True, stable=True)
+        x = x.gather(1, indices[:, :, None].expand_as(x))
+        # set masked values to 0 (not really necessary since we'll ignore them anyway)
+        x = x * sorted_mask.unsqueeze(-1)
 
-        # we want the mask to just be the indices of the masked tokens
-        indices = repeat(torch.arange(0, x.shape[1]).long().to(x.device), "d -> b d", b=x.shape[0])
+        # cut off to the length of the longest sequence
+        max_length = sorted_mask.sum(-1).max()
+        x = x[:, :max_length]
+        updated_mask = 1 - sorted_mask[:, :max_length]
 
-        x = x[~mask.bool()].view(batch_size, kept_elements_per_batch, embedding_dim)
+        return x, indices, updated_mask
 
-        mask = mask[:, :, 0]
-        kept_indices = indices[~mask.bool()].view(batch_size, kept_elements_per_batch)
-        removed_indices = indices[mask.bool()].view(batch_size, removed_elements_per_batch)
+    def add_masked_tokens_with_zeros(self, x, orig_indices, x_mask):
+        all_masked = torch.zeros((x.shape[0], orig_indices.shape[1], self.embedding_size), device=x.device)
+        mask = torch.cat(
+            (
+                x_mask,
+                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device),
+            ),
+            dim=-1,
+        )
+        # can't set value on leaf variable
+        out = all_masked.clone()
+        # put tokens in full masked tensor (at the first N positions in every row)
+        out[~mask.bool()] = x[~x_mask.bool()]
+        # then move them to their original positions
+        out = out.scatter(1, orig_indices[:, :, None].expand_as(out), out)
+        return out
 
-        return x, kept_indices, removed_indices
+    def rearrange_to_time(self, x: torch.Tensor, orig_mask: torch.Tensor, num_timesteps: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        # output of shape [b, num_timesteps, tokens_per_timestep, d]
+        output, output_mask = [], []
+        cur_start_timestep = 0
+        for channel_group, _ in self.band_groups.items():
+            if channel_group == "SRTM":
+                index = cur_start_timestep
+                output.append(repeat(x[:, index, :], "b d -> b t d", t=num_timesteps))
+                output_mask.append(repeat(orig_mask[:, index], "b -> b t", t=num_timesteps))
+                cur_start_timestep += 1
+            else:
+                indices = torch.arange(cur_start_timestep, cur_start_timestep + num_timesteps, device=x.device)
+                output.append(x[:, indices, :])
+                output_mask.append(orig_mask[:, indices])
+                cur_start_timestep += num_timesteps
+        return torch.stack(output, dim=-2), torch.stack(output_mask, dim=-1)
 
     def forward(
         self,
@@ -349,17 +455,19 @@ class Encoder(nn.Module):
         latlons: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
         month: Union[torch.Tensor, int] = 0,
-        eval_task: bool = True,
+        eval_pooling: Optional[str] = None,
     ):
         device = x.device
 
         if mask is None:
-            mask = torch.zeros_like(x, device=x.device).float()
-
+            mask = torch.zeros_like(x, device=x.device)
+        num_timesteps = x.shape[1]
         months = month_to_tensor(month, x.shape[0], x.shape[1], device)
         month_embedding = self.month_embed(months)
         positional_embedding = repeat(
-            self.pos_embed[:, : x.shape[1], :], "b t d -> (repeat b) t d", repeat=x.shape[0]
+            self.pos_embed[:, : x.shape[1], :],
+            "b t d -> (repeat b) t d",
+            repeat=x.shape[0],
         )
 
         # we assume the number of masked patches is the same
@@ -393,11 +501,7 @@ class Encoder(nn.Module):
             tokens = tokens[:, indices]
             tokens += channel_wise_positional_embedding
             all_tokens.append(tokens)
-            group_mask = repeat(
-                torch.max(mask[:, indices, channel_idxs], dim=-1)[0],
-                "b t -> b t d",
-                d=tokens.shape[-1],
-            )
+            group_mask = torch.max(mask[:, indices, channel_idxs], dim=-1)[0]
             all_masks.append(group_mask)
 
         # then, dynamic world
@@ -413,27 +517,45 @@ class Encoder(nn.Module):
         all_tokens.append(tokens)
 
         # now we calculate the mask for these [b, t] tokens
-        group_mask = repeat(
-            dynamic_world == NUM_DYNAMIC_WORLD_CLASSES, "b t -> b t d", d=tokens.shape[-1]
-        )
+        group_mask = dynamic_world == NUM_DYNAMIC_WORLD_CLASSES
         all_masks.append(group_mask)
 
         x = torch.cat(all_tokens, dim=1)  # [batch, timesteps, embedding_dim]
-        mask = torch.cat(all_masks, dim=1)  # [batch, timesteps, embedding_dim]
-        x, kept_indices, removed_indices = self.mask_tokens(x, mask)
-
+        mask = torch.cat(all_masks, dim=1)  # [batch, timesteps]
+        x, orig_indices, upd_mask = self.mask_tokens(x, mask)
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
         x = torch.cat((latlon_tokens, x), dim=1)
+        upd_mask = torch.cat((torch.zeros(x.shape[0])[:, None].to(device), upd_mask), dim=1)
+        orig_indices = torch.cat(
+            (torch.zeros(x.shape[0])[:, None].to(device).int(), orig_indices + 1),
+            dim=1,
+        )
 
         # apply Transformer blocks
         for blk in self.blocks:
-            x = blk(x)
+            x = blk(x, attn_mask=~upd_mask.bool())
 
         # mask will be a boolean of shape [batch, total_num_tokens]
-        if eval_task:
-            return self.norm(x.mean(dim=1))
-        return self.norm(x), kept_indices, removed_indices
+        if eval_pooling is not None:
+            if eval_pooling not in ("global", "time"):
+                raise ValueError(f"Expected eval_pooling to be one of 'global', 'time', got {eval_pooling}")
+            if eval_pooling == "global":
+                # set masked tokens to 0
+                x_for_mean = x * (1 - upd_mask.unsqueeze(-1))
+                x_mean = x_for_mean.sum(dim=1) / torch.sum(1 - upd_mask, -1, keepdim=True)
+                return self.norm(x_mean)
+            else:
+                filled_x = self.add_masked_tokens_with_zeros(x, orig_indices, upd_mask)
+                # remove the latlon token
+                x = x[:, 1:, :]
+                x_per_timestep, mask_per_timestep = self.rearrange_to_time(filled_x, mask, num_timesteps)
+                # x, mask have shape [b, timesteps, token_per_timesteps, dim]
+                x_for_mean = x_per_timestep * (1 - mask_per_timestep.unsqueeze(-1))
+                x_mean = x_for_mean.sum(dim=2) / torch.sum(1 - mask_per_timestep, -1, keepdim=True)
+                return self.norm(x_mean)
+
+        return self.norm(x), orig_indices, upd_mask
 
 
 class Decoder(nn.Module):
@@ -499,7 +621,6 @@ class Decoder(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-
         pos_embed = get_sinusoid_encoding_table(self.pos_embed.shape[1], self.pos_embed.shape[-1])
         self.pos_embed.data.copy_(pos_embed)
 
@@ -516,23 +637,22 @@ class Decoder(nn.Module):
             nn.init.constant_(m.bias, 0)
             nn.init.constant_(m.weight, 1.0)
 
-    def add_masked_tokens(self, x, kept_indices, removed_indices):
-        mask_tokens = repeat(
-            self.mask_token, "d -> b t d", b=x.shape[0], t=removed_indices.shape[1]
+    def add_masked_tokens(self, x, orig_indices, x_mask):
+        all_masked = repeat(self.mask_token, "d -> b t d", b=x.shape[0], t=orig_indices.shape[1])
+        mask = torch.cat(
+            (
+                x_mask,
+                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device),
+            ),
+            dim=-1,
         )
-
-        x = torch.cat([x, mask_tokens], dim=1)
-
-        # sort according to their indices. Shape is [batch, index]
-        combined_indices = torch.cat([kept_indices, removed_indices], dim=1) + 1
-        # 0 for latlon index
-        combined_indices = torch.sort(
-            torch.cat([torch.zeros_like(combined_indices[:, 0:1]), combined_indices], dim=1)
-        )[1]
-        # and then tile for each dimension
-        combined_indices = repeat(combined_indices, "b t -> b t d", d=x.shape[-1])
-        x = torch.gather(x, 1, combined_indices)
-        return x
+        # can't set value on leaf variable
+        out = all_masked.clone()
+        # put tokens in full masked tensor (at the first N positions in every row)
+        out[~mask.bool()] = x[~x_mask.bool()]
+        # then move them to their original positions
+        out = out.scatter(1, orig_indices[:, :, None].expand_as(out), out)
+        return out
 
     def add_embeddings(self, x, month: Union[torch.Tensor, int]):
         num_channel_groups = len(self.band_group_to_idx)
@@ -549,7 +669,9 @@ class Decoder(nn.Module):
         remove_mask[torch.arange(num_timesteps - 1) + srtm_index] = True
 
         month_embedding = repeat(
-            self.month_embed(months), "b t d -> b (repeat t) d", repeat=num_channel_groups
+            self.month_embed(months),
+            "b t d -> b (repeat t) d",
+            repeat=num_channel_groups,
         )
         month_embedding = month_embedding[:, ~remove_mask]
         month_embedding[:, srtm_index] = 0
@@ -575,7 +697,8 @@ class Decoder(nn.Module):
 
         # add the zero embedding for the latlon token
         positional_embedding = torch.cat(
-            [torch.zeros_like(positional_embedding[:, 0:1, :]), positional_embedding], dim=1
+            [torch.zeros_like(positional_embedding[:, 0:1, :]), positional_embedding],
+            dim=1,
         )
 
         x += positional_embedding
@@ -620,10 +743,9 @@ class Decoder(nn.Module):
         # is ordered
         return torch.cat(eo_output, dim=-1), cast(torch.Tensor, dw_output)
 
-    def forward(self, x, kept_indices, removed_indices, month):
-
+    def forward(self, x, orig_indices, x_mask, month):
         x = self.decoder_embed(x)
-        x = self.add_masked_tokens(x, kept_indices, removed_indices)
+        x = self.add_masked_tokens(x, orig_indices, x_mask)
         x = self.add_embeddings(x, month)
 
         # apply Transformer blocks
@@ -654,7 +776,6 @@ class PrestoFineTuningModel(nn.Module):
         mask: Optional[torch.Tensor] = None,
         month: Union[torch.Tensor, int] = 0,
     ) -> torch.Tensor:
-
         return self.head(
             self.encoder(
                 x=x,
@@ -703,7 +824,7 @@ class Presto(nn.Module):
             latlons=latlons,
             mask=mask,
             month=month,
-            eval_task=False,
+            eval_pooling=None,
         )
 
         return self.decoder(x, kept_indices, removed_indices, month)
@@ -752,6 +873,8 @@ class Presto(nn.Module):
             hidden_size=self.encoder.embedding_size,
             regression=regression,
         )
-        model = PrestoFineTuningModel(self.encoder, head).to(self.encoder.pos_embed.device)
+        model = PrestoFineTuningModel(self.encoder, head).to(
+            self.encoder.pos_embed.device
+        )
         model.train()
         return model

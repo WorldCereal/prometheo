@@ -1,5 +1,11 @@
+from typing import NamedTuple, Optional, Union, Sequence
+
 import numpy as np
-from Typing import List, NamedTuple, Optional, Union
+import torch
+from torch.utils.data import default_collate
+
+# from prometheo.utils import device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 NODATAVALUE = 65535
 
@@ -7,8 +13,9 @@ NODATAVALUE = 65535
 # NEED THOROUGH AND PRECISE DOCUMENTATION AND TESTS!!!
 # checks should be implemented at the test level
 # here, we need to fix the exted ranges for the bands
-s1_bands = [("VV", "db"), ("VH", "db")]
-s2_bands = [
+S1_BANDS = ["VV", "VH"]
+S1_BANDS_UNITS = ["dB", "dB"]  # TODO for all other bands
+S2_BANDS = [
     "B1",
     "B2",
     "B3",
@@ -23,18 +30,45 @@ s2_bands = [
     "B11",
     "B12",
 ]
+METEO_BANDS = ["temperature", "precipitation"]
+DEM_BANDS = ["elevation", "slope"]
 
-# meteo_bands = []
+
+ArrayTensor = Union[np.ndarray, torch.Tensor]
+DEFAULT_INT = -1  # Default placeholder for missing integer values
+
+
+def to_torchtensor(x: ArrayTensor, device: torch.device = device):
+    if isinstance(x, np.ndarray):
+        x = torch.from_numpy(x)
+    return x.to(device)
 
 
 class Predictors(NamedTuple):
-    s1: Optional[np.ndarray] = None  # VV VH
-    s2: Optional[np.ndarray] = None
-    meteo: Optional[np.ndarray] = None
-    dem: Optional[np.ndarray] = None
-    latlon: Optional[np.ndarray] = None
+    s1: Optional[ArrayTensor] = None  # [B, H, W, T, len(S1_bands)]
+    s2: Optional[ArrayTensor] = None  # [B, H, W, T, len(S2_bands)]
+    meteo: Optional[ArrayTensor] = None  # [B, T, len(meteo_bands)]
+    dem: Optional[ArrayTensor] = None  # [B, H, W, len(dem)]
+    latlon: Optional[ArrayTensor] = None  # [B, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
-    aux_inputs: Optional[List[np.ndarray]] = None
+    # for now we ignore them
+    # aux_inputs: Optional[List[ArrayTensor]] = None
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[np.ndarray] = None
-    month: Optional[Union[np.ndarray, int]] = None
+    label: Optional[ArrayTensor] = None  # [B, H, W, T, num_outputs]
+    timestamps: Optional[ArrayTensor] = None
+
+    def as_dict(self, ignore_nones: bool = True):
+        return_dict = {}
+        for field in self._fields:
+            val = getattr(self, field)
+            if ignore_nones and (val is None):
+                continue
+            else:
+                return_dict[field] = val
+        return return_dict
+
+
+def collate_fn(batch: Sequence[Predictors]):
+    # we assume that the same values are consistently None
+    collated_dict = default_collate([i.as_dict(ignore_nones=True) for i in batch])
+    return Predictors(**collated_dict)
