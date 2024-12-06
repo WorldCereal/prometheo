@@ -4,7 +4,7 @@ from unittest import TestCase
 import pandas as pd
 from torch.utils.data import DataLoader
 
-from prometheo.datasets.worldcereal import (
+from prometheo.datasets import (
     WorldCerealDataset,
     WorldCerealLabelledDataset,
 )
@@ -26,18 +26,41 @@ def load_dataframe(timestep_freq="month"):
 
 
 class TestDataset(TestCase):
+    def check_batch(self, batch, batch_size, num_timesteps):
+        self.assertEqual(
+            batch.s1.shape, (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
+        )
+        self.assertEqual(
+            batch.s2.shape, (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
+        )
+        self.assertEqual(
+            batch.meteo.shape, (batch_size, num_timesteps, len(METEO_BANDS))
+        )
+        self.assertEqual(batch.timestamps.shape, (batch_size, num_timesteps, 3))
+        self.assertTrue((batch.timestamps[:, :, 1] <= 12).all())
+        self.assertTrue((batch.timestamps[:, :, 1] >= 1).all())
+        self.assertTrue((batch.timestamps[:, :, 0] <= 31).all())
+        self.assertTrue((batch.timestamps[:, :, 0] >= 1).all())
+
+        # if we are still using this software in 100 years we will need
+        # to update this. This should catch errors in year transformations
+        # though
+        self.assertTrue((batch.timestamps[:, :, 2] >= 1999).all())
+        self.assertTrue((batch.timestamps[:, :, 0] <= 2124).all())
+        self.assertEqual(batch.latlon.shape, (batch_size, 2))
+        self.assertTrue((batch.latlon[:, 0] >= -90).all())
+        self.assertTrue((batch.latlon[:, 0] <= 90).all())
+        self.assertTrue((batch.latlon[:, 1] >= -180).all())
+        self.assertTrue((batch.latlon[:, 1] <= 180).all())
+        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
+
     def test_WorldCerealDataset(self):
         df = load_dataframe()
         ds = WorldCerealDataset(df)
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        self.assertEqual(batch.s1.shape, (batch_size, 1, 1, 12, len(S1_BANDS)))
-        self.assertEqual(batch.s2.shape, (batch_size, 1, 1, 12, len(S2_BANDS)))
-        self.assertEqual(batch.meteo.shape, (batch_size, 12, len(METEO_BANDS)))
-        self.assertEqual(batch.timestamps.shape, (batch_size, 12, 3))
-        self.assertEqual(batch.latlon.shape, (batch_size, 2))
-        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
+        self.check_batch(batch, batch_size, 12)
 
         for model_cls in models_to_test:
             model = model_cls()
@@ -56,18 +79,7 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        self.assertEqual(
-            batch.s1.shape, (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
-        )
-        self.assertEqual(
-            batch.s2.shape, (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
-        )
-        self.assertEqual(
-            batch.meteo.shape, (batch_size, num_timesteps, len(METEO_BANDS))
-        )
-        self.assertEqual(batch.timestamps.shape, (batch_size, num_timesteps, 3))
-        self.assertEqual(batch.latlon.shape, (batch_size, 2))
-        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
+        self.check_batch(batch, batch_size, num_timesteps)
 
         for model_cls in models_to_test:
             model = model_cls()
@@ -84,13 +96,7 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        self.assertEqual(batch.s1.shape, (batch_size, 1, 1, 12, len(S1_BANDS)))
-        self.assertEqual(batch.s2.shape, (batch_size, 1, 1, 12, len(S2_BANDS)))
-        self.assertEqual(batch.meteo.shape, (batch_size, 12, len(METEO_BANDS)))
-        self.assertEqual(batch.timestamps.shape, (batch_size, 12, 3))
-        self.assertEqual(batch.latlon.shape, (batch_size, 2))
-        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
-        self.assertEqual(batch.label.shape, (batch_size, 1, 1, 12, 1))
+        self.check_batch(batch, batch_size, 12)
 
         for model_cls in models_to_test:
             model = model_cls()
@@ -117,21 +123,7 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        self.assertEqual(
-            batch.s1.shape, (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
-        )
-        self.assertEqual(
-            batch.s2.shape, (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
-        )
-        self.assertEqual(
-            batch.meteo.shape, (batch_size, num_timesteps, len(METEO_BANDS))
-        )
-        self.assertEqual(batch.timestamps.shape, (batch_size, num_timesteps, 3))
-        self.assertEqual(batch.latlon.shape, (batch_size, 2))
-        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
-        self.assertEqual(
-            batch.label.shape, (batch_size, 1, 1, num_timesteps, num_outputs)
-        )
+        self.check_batch(batch, batch_size, num_timesteps)
 
         for model_cls in models_to_test:
             model = model_cls()
