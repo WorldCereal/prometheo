@@ -149,8 +149,6 @@ def dataset_to_model(x: Predictors):
     timesteps = [v.shape[-2] for v in [x.s1, x.s2, x.meteo] if v is not None]
     if len(timesteps) == 0:
         raise ValueError("One of s1, s2, meteo must be not None")
-    if len(batch_sizes) == 0:
-        raise ValueError("One of s1, s2, dem, meteo must be not None")
     if not all(v == batch_sizes[0] for v in batch_sizes):
         raise ValueError("dim 0 (batch size) must be consistent for s1, s2, dem, meteo")
     if not all(v == timesteps[0] for v in timesteps):
