@@ -4,8 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import default_collate
 
-# from prometheo.utils import device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from prometheo.utils import device
 
 NODATAVALUE = 65535
 
