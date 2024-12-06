@@ -6,6 +6,7 @@ from .single_file_presto import (
     BANDS_DIV,
     Encoder,
     FinetuningHead,
+    get_sinusoid_encoding_table,
 )
 import numpy as np
 from prometheo.predictors import (
@@ -219,10 +220,30 @@ class PretrainedPrestoWrapper(nn.Module):
         # make sure the model is trainable, since we can call
         # this having called requires_grad_(False)
         self.presto.requires_grad_(True)
-        # but don't unfreeze the position encoder, which
+        # but don't unfreeze the month encoder, which
         # shouldn't be trainable
-        self.presto.pos_embed.requires_grad_(False)
         self.presto.month_embed.requires_grad_(False)
+
+        # update the positional encodings to handle
+        # longer sequences for dekadal data
+        max_sequence_length = 72  # can this be 36?
+        old_pos_embed_device = self.presto.pos_embed.device
+        self.presto.pos_embed = nn.Parameter(
+            torch.zeros(
+                1,
+                max_sequence_length,
+                self.presto.pos_embed.shape[-1],
+                device=old_pos_embed_device,
+            ),
+            requires_grad=False,
+        )
+        pos_embed = get_sinusoid_encoding_table(
+            self.presto.pos_embed.shape[1], self.presto.pos_embed.shape[-1]
+        )
+        self.presto.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
+        # Same as the month encoder, the position encoder
+        # shouldn't be encoder
+        self.presto.pos_embed.requires_grad_(False)
 
         head_variables = [num_outputs, regression]
         if len([x for x in head_variables if x is not None]) not in [
@@ -286,7 +307,8 @@ class PretrainedPrestoWrapper(nn.Module):
             dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
             latlons=to_torchtensor(x.latlon, device=device).float(),
             mask=to_torchtensor(mask, device=device).long(),
-            month=to_torchtensor(x.timestamps[:, :, 1], device=device),
+            # presto wants 0 indexed months, not 1 indexed months
+            month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
             eval_pooling=eval_pooling,
         )
         if self.head is not None:

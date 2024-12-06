@@ -8,7 +8,11 @@ from prometheo.datasets.worldcereal import (
     WorldCerealDataset,
     WorldCerealLabelledDataset,
 )
+from prometheo.models import Presto
 from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
+
+
+models_to_test = [Presto]
 
 
 def load_dataframe(timestep_freq="month"):
@@ -35,6 +39,15 @@ class TestDataset(TestCase):
         self.assertEqual(batch.latlon.shape, (batch_size, 2))
         self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
+
     def test_WorldCerealDataset_10D(self):
         # Test dekadal version of worldcereal dataset
         df = load_dataframe(timestep_freq="dekad")
@@ -56,6 +69,15 @@ class TestDataset(TestCase):
         self.assertEqual(batch.latlon.shape, (batch_size, 2))
         self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
+
     def test_WorldCerealLabelledDataset(self):
         df = load_dataframe()
         ds = WorldCerealLabelledDataset(df, augment=True)
@@ -69,6 +91,15 @@ class TestDataset(TestCase):
         self.assertEqual(batch.latlon.shape, (batch_size, 2))
         self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
         self.assertEqual(batch.label.shape, (batch_size, 1, 1, 12, 1))
+
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
 
     def test_WorldCerealLabelledDataset_10D(self):
         # Test dekadal version of labelled worldcereal dataset
@@ -101,3 +132,12 @@ class TestDataset(TestCase):
         self.assertEqual(
             batch.label.shape, (batch_size, 1, 1, num_timesteps, num_outputs)
         )
+
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
