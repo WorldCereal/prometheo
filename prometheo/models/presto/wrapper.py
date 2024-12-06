@@ -213,6 +213,14 @@ class PretrainedPrestoWrapper(nn.Module):
     def __init__(
         self, num_outputs: Optional[int] = None, regression: Optional[bool] = None
     ):
+        """
+        With the default arguments, this wrapper returns embeddings which
+        can be passed to another algorithm (e.g. a CatBoost classifier).
+
+        If `num_outputs` and `regression` is not None, a finetuning head
+        is added which will return `num_outputs` outputs either for a
+        regressions or a classification task
+        """
         super().__init__()
         self.presto = Encoder()
         # make sure the model is trainable, since we can call
