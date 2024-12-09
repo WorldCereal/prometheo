@@ -169,8 +169,8 @@ class WorldCerealDataset(Dataset):
         return center_point
 
     def _get_timestamps(self, row_d: Dict, timestep_positions: List[int]) -> np.ndarray:
-        start_date = pd.to_datetime(row_d["start_date"])
-        end_date = pd.to_datetime(row_d["end_date"])
+        start_date = datetime.strptime(row_d["start_date"], "%Y-%m-%d")
+        end_date = datetime.strptime(row_d["end_date"], "%Y-%m-%d")
         if self.timestep_freq == "month":
             timestamps = pd.date_range(start=start_date, end=end_date, freq="MS")
         elif self.timestep_freq == "dekad":
@@ -360,9 +360,6 @@ def _dekad_index(begin, end):
     """
 
     import calendar
-
-    begin = pd.to_datetime(begin)
-    end = pd.to_datetime(end)
 
     mon_begin = datetime(begin.year, begin.month, 1)
     mon_end = datetime(end.year, end.month, 1)
