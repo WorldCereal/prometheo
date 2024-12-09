@@ -106,7 +106,9 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim**-0.5
-        self.fast_attn = hasattr(torch.nn.functional, "scaled_dot_product_attention")  # FIXME
+        self.fast_attn = hasattr(
+            torch.nn.functional, "scaled_dot_product_attention"
+        )  # FIXME
 
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
@@ -117,7 +119,11 @@ class Attention(nn.Module):
 
     def forward(self, x, attn_mask=None):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -214,7 +220,9 @@ class Block(nn.Module):
             proj_drop=drop,
             norm_layer=norm_layer,
         )
-        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls1 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
 
         self.norm2 = norm_layer(dim)
         self.mlp = Mlp(
@@ -223,7 +231,9 @@ class Block(nn.Module):
             act_layer=act_layer,
             drop=drop,
         )
-        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.ls2 = (
+            LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        )
 
     def forward(self, x, attn_mask=None):
         x = x + self.ls1(self.attn(self.norm1(x), attn_mask))
@@ -402,7 +412,9 @@ class Encoder(nn.Module):
 
         # https://stackoverflow.com/a/68621610/2332296
         # move all non-masked values to the front of their rows
-        sorted_mask, indices = torch.sort((~mask).int(), dim=1, descending=True, stable=True)
+        sorted_mask, indices = torch.sort(
+            (~mask).int(), dim=1, descending=True, stable=True
+        )
         x = x.gather(1, indices[:, :, None].expand_as(x))
         # set masked values to 0 (not really necessary since we'll ignore them anyway)
         x = x * sorted_mask.unsqueeze(-1)
@@ -415,11 +427,15 @@ class Encoder(nn.Module):
         return x, indices, updated_mask
 
     def add_masked_tokens_with_zeros(self, x, orig_indices, x_mask):
-        all_masked = torch.zeros((x.shape[0], orig_indices.shape[1], self.embedding_size), device=x.device)
+        all_masked = torch.zeros(
+            (x.shape[0], orig_indices.shape[1], self.embedding_size), device=x.device
+        )
         mask = torch.cat(
             (
                 x_mask,
-                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device),
+                torch.ones(
+                    (x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device
+                ),
             ),
             dim=-1,
         )
@@ -431,7 +447,9 @@ class Encoder(nn.Module):
         out = out.scatter(1, orig_indices[:, :, None].expand_as(out), out)
         return out
 
-    def rearrange_to_time(self, x: torch.Tensor, orig_mask: torch.Tensor, num_timesteps: int) -> Tuple[torch.Tensor, torch.Tensor]:
+    def rearrange_to_time(
+        self, x: torch.Tensor, orig_mask: torch.Tensor, num_timesteps: int
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         # output of shape [b, num_timesteps, tokens_per_timestep, d]
         output, output_mask = [], []
         cur_start_timestep = 0
@@ -439,10 +457,16 @@ class Encoder(nn.Module):
             if channel_group == "SRTM":
                 index = cur_start_timestep
                 output.append(repeat(x[:, index, :], "b d -> b t d", t=num_timesteps))
-                output_mask.append(repeat(orig_mask[:, index], "b -> b t", t=num_timesteps))
+                output_mask.append(
+                    repeat(orig_mask[:, index], "b -> b t", t=num_timesteps)
+                )
                 cur_start_timestep += 1
             else:
-                indices = torch.arange(cur_start_timestep, cur_start_timestep + num_timesteps, device=x.device)
+                indices = torch.arange(
+                    cur_start_timestep,
+                    cur_start_timestep + num_timesteps,
+                    device=x.device,
+                )
                 output.append(x[:, indices, :])
                 output_mask.append(orig_mask[:, indices])
                 cur_start_timestep += num_timesteps
@@ -479,7 +503,9 @@ class Encoder(nn.Module):
             channel_embedding = self.channel_embed(
                 torch.tensor(self.band_group_to_idx[channel_group]).long().to(device)
             )
-            channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
+            channel_embedding = repeat(
+                channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1]
+            )
             if channel_group == "SRTM":
                 # for SRTM, we reduce it to a single token instead of
                 # a token per timestep
@@ -509,7 +535,9 @@ class Encoder(nn.Module):
         channel_embedding = self.channel_embed(
             torch.tensor(self.band_group_to_idx["dynamic_world"]).long().to(device)
         )
-        channel_embedding = repeat(channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1])
+        channel_embedding = repeat(
+            channel_embedding, "d -> b t d", b=x.shape[0], t=x.shape[1]
+        )
         positional_embedding = torch.cat(
             (month_embedding, channel_embedding, positional_embedding), dim=-1
         )
@@ -526,7 +554,9 @@ class Encoder(nn.Module):
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
         x = torch.cat((latlon_tokens, x), dim=1)
-        upd_mask = torch.cat((torch.zeros(x.shape[0])[:, None].to(device), upd_mask), dim=1)
+        upd_mask = torch.cat(
+            (torch.zeros(x.shape[0])[:, None].to(device), upd_mask), dim=1
+        )
         orig_indices = torch.cat(
             (torch.zeros(x.shape[0])[:, None].to(device).int(), orig_indices + 1),
             dim=1,
@@ -539,20 +569,28 @@ class Encoder(nn.Module):
         # mask will be a boolean of shape [batch, total_num_tokens]
         if eval_pooling is not None:
             if eval_pooling not in ("global", "time"):
-                raise ValueError(f"Expected eval_pooling to be one of 'global', 'time', got {eval_pooling}")
+                raise ValueError(
+                    f"Expected eval_pooling to be one of 'global', 'time', got {eval_pooling}"
+                )
             if eval_pooling == "global":
                 # set masked tokens to 0
                 x_for_mean = x * (1 - upd_mask.unsqueeze(-1))
-                x_mean = x_for_mean.sum(dim=1) / torch.sum(1 - upd_mask, -1, keepdim=True)
+                x_mean = x_for_mean.sum(dim=1) / torch.sum(
+                    1 - upd_mask, -1, keepdim=True
+                )
                 return self.norm(x_mean)
             else:
                 filled_x = self.add_masked_tokens_with_zeros(x, orig_indices, upd_mask)
                 # remove the latlon token
                 x = x[:, 1:, :]
-                x_per_timestep, mask_per_timestep = self.rearrange_to_time(filled_x, mask, num_timesteps)
+                x_per_timestep, mask_per_timestep = self.rearrange_to_time(
+                    filled_x, mask, num_timesteps
+                )
                 # x, mask have shape [b, timesteps, token_per_timesteps, dim]
                 x_for_mean = x_per_timestep * (1 - mask_per_timestep.unsqueeze(-1))
-                x_mean = x_for_mean.sum(dim=2) / torch.sum(1 - mask_per_timestep, -1, keepdim=True)
+                x_mean = x_for_mean.sum(dim=2) / torch.sum(
+                    1 - mask_per_timestep, -1, keepdim=True
+                )
                 return self.norm(x_mean)
 
         return self.norm(x), orig_indices, upd_mask
@@ -575,9 +613,12 @@ class Decoder(nn.Module):
 
         # this is used for the channel embedding
         self.band_group_to_idx = {
-            group_name: idx for idx, (group_name, _) in enumerate(self.band_groups.items())
+            group_name: idx
+            for idx, (group_name, _) in enumerate(self.band_groups.items())
         }
-        self.band_group_to_idx["dynamic_world"] = max(self.band_group_to_idx.values()) + 1
+        self.band_group_to_idx["dynamic_world"] = (
+            max(self.band_group_to_idx.values()) + 1
+        )
 
         self.decoder_embed = nn.Linear(encoder_embed_dim, decoder_embed_dim, bias=True)
 
@@ -621,7 +662,9 @@ class Decoder(nn.Module):
         self.initialize_weights()
 
     def initialize_weights(self):
-        pos_embed = get_sinusoid_encoding_table(self.pos_embed.shape[1], self.pos_embed.shape[-1])
+        pos_embed = get_sinusoid_encoding_table(
+            self.pos_embed.shape[1], self.pos_embed.shape[-1]
+        )
         self.pos_embed.data.copy_(pos_embed)
 
         # initialize nn.Linear and nn.LayerNorm
@@ -638,11 +681,15 @@ class Decoder(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def add_masked_tokens(self, x, orig_indices, x_mask):
-        all_masked = repeat(self.mask_token, "d -> b t d", b=x.shape[0], t=orig_indices.shape[1])
+        all_masked = repeat(
+            self.mask_token, "d -> b t d", b=x.shape[0], t=orig_indices.shape[1]
+        )
         mask = torch.cat(
             (
                 x_mask,
-                torch.ones((x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device),
+                torch.ones(
+                    (x.shape[0], orig_indices.shape[1] - x.shape[1]), device=x.device
+                ),
             ),
             dim=-1,
         )
@@ -665,7 +712,9 @@ class Decoder(nn.Module):
         # when we expand the encodings, each channel_group gets num_timesteps
         # encodings. However, there is only one SRTM token so we remove the
         # excess SRTM encodings
-        remove_mask = torch.full(size=(num_timesteps * num_channel_groups,), fill_value=False)
+        remove_mask = torch.full(
+            size=(num_timesteps * num_channel_groups,), fill_value=False
+        )
         remove_mask[torch.arange(num_timesteps - 1) + srtm_index] = True
 
         month_embedding = repeat(

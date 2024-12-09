@@ -4,8 +4,7 @@ import numpy as np
 import torch
 from torch.utils.data import default_collate
 
-# from prometheo.utils import device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from prometheo.utils import device
 
 NODATAVALUE = 65535
 
@@ -55,7 +54,7 @@ class Predictors(NamedTuple):
     # aux_inputs: Optional[List[ArrayTensor]] = None
     # Label needs to always be 2D, with temporal dimension
     label: Optional[ArrayTensor] = None  # [B, H, W, T, num_outputs]
-    timestamps: Optional[ArrayTensor] = None
+    timestamps: Optional[ArrayTensor] = None  # [B, T, D=3], where D=[day, month, year]
 
     def as_dict(self, ignore_nones: bool = True):
         return_dict = {}

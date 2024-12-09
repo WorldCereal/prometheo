@@ -177,7 +177,9 @@ class WorldCerealDataset(Dataset):
             timestamps = get_dekad_date_range(start_date, end_date)
         else:
             raise NotImplementedError()
-        return timestamps[timestep_positions].to_numpy()
+
+        timestamps = timestamps[timestep_positions]
+        return np.stack([timestamps.day, timestamps.month, timestamps.year], axis=1)
 
     def get_inputs(self, row_d: Dict, timestep_positions: List[int]) -> dict:
         # Get latlons
@@ -215,17 +217,8 @@ class WorldCerealDataset(Dataset):
                 dem[..., DEM_BANDS.index(dst_atr)] = values
             else:
                 raise ValueError(f"Unknown band {dst_atr}")
-
         return dict(
-            s1=s1,
-            s2=s2,
-            meteo=meteo,
-            dem=dem,
-            latlon=latlon,
-            # timestamps=timestamps,
-            timestamps=timestamps.astype(
-                np.int64
-            ),  # TODO: parse true datetimes once DataLoader can handle this!!
+            s1=s1, s2=s2, meteo=meteo, dem=dem, latlon=latlon, timestamps=timestamps
         )
 
     def initialize_inputs(self):
