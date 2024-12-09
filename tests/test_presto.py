@@ -11,6 +11,7 @@ class TestPresto(unittest.TestCase):
     def test_forward_from_predictor_with_all(self):
         b, t, h, w = 8, 4, 1, 1
 
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
@@ -18,7 +19,7 @@ class TestPresto(unittest.TestCase):
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, 2),
             label=np.ones((b, 1, 1)),
-            timestamps=repeat(np.array([2020, 1, 1]), "d -> b t d", b=b, t=t),
+            timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
         output_embeddings = model(x)
@@ -27,11 +28,12 @@ class TestPresto(unittest.TestCase):
     def test_forward_from_predictor_with_s1_only(self):
         b, t, h, w = 8, 4, 1, 1
 
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             latlon=np.random.rand(b, 2),
             label=np.ones((b, 1, 1)),
-            timestamps=repeat(np.array([2020, 1, 1]), "d -> b t d", b=b, t=t),
+            timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
         output_embeddings = model(x)
@@ -62,6 +64,7 @@ class TestPresto(unittest.TestCase):
     def test_forward_from_predictor_per_time(self):
         b, t, h, w = 8, 4, 1, 1
 
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
@@ -69,7 +72,7 @@ class TestPresto(unittest.TestCase):
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, 2),
             label=np.ones((b, t, 1)),
-            timestamps=repeat(np.array([2020, 1, 1]), "d -> b t d", b=b, t=t),
+            timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
         output_embeddings = model(x)
