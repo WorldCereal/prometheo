@@ -260,8 +260,24 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         num_outputs: int = 1,
         croptype_list: List = [],
         return_hierarchical_labels: bool = False,
+        time_explicit: bool = False,
         **kwargs,
     ):
+        """Labelled version of WorldCerealDataset for supervised training.
+        Additional arguments are explained below.
+
+        Parameters
+        ----------
+        num_outputs : int, optional
+            number of outputs to supervise training on, by default 1
+        croptype_list : List, optional
+            TODO: explain, by default []
+        return_hierarchical_labels : bool, optional
+            TODO: explain, by default False
+        time_explicit : bool, optional
+            if True, labels respect the full temporal dimension
+            to have temporally explicit outputs, by default False
+        """
         assert task_type in [
             "binary",
             "multiclass",
@@ -274,6 +290,7 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
             dataframe, task_type=task_type, num_outputs=num_outputs, **kwargs
         )
         self.croptype_list = croptype_list
+        self.time_explicit = time_explicit
         self.return_hierarchical_labels = return_hierarchical_labels
 
     def __getitem__(self, idx):
@@ -286,12 +303,13 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
 
         return Predictors(**inputs, label=label)
 
-    def initialize_label(self, dtype=np.int16):
+    def initialize_label(self):
+        tsteps = self.num_timesteps if self.time_explicit else 1
         label = np.full(
-            (1, 1, self.num_timesteps, self.num_outputs),
+            (1, 1, tsteps, self.num_outputs),
             fill_value=NODATAVALUE,
-            dtype=dtype,
-        )  # [H, W, T, num_outputs]
+            dtype=np.int32,
+        )  # [H, W, T or 1, num_outputs]
 
         return label
 
@@ -301,8 +319,9 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         task_type: str = "cropland",
         valid_position: Optional[int] = None,
     ) -> np.ndarray:
-        """Get the label for the given row. Label is a 2D array based number
-        of timesteps and number of outputs.
+        """Get the label for the given row. Label is a 2D array based on
+        the number of timesteps and number of outputs. If time_explicit is False,
+        the number of timesteps will be set to 1.
 
         Parameters
         ----------
@@ -312,7 +331,8 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
             task type to infer labels from, by default "cropland"
         valid_position : int, optional
             validity position of the label, by default None.
-            If provided, only the label at the corresponding timestep will be
+            If provided and `time_explicit` is True,
+            only the label at the corresponding timestep will be
             set while other timesteps will be set to NODATAVALUE.
 
         Returns
@@ -322,7 +342,11 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         """
 
         label = self.initialize_label()
-        valid_idx = valid_position or np.arange(self.num_timesteps)
+        if not self.time_explicit:
+            # We have only one label for the whole sequence
+            valid_idx = 0
+        else:
+            valid_idx = valid_position or np.arange(self.num_timesteps)
 
         if task_type == "cropland":
             label[0, 0, valid_idx, :] = int(row_d["LANDCOVER_LABEL"] == 11)
