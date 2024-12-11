@@ -169,17 +169,24 @@ class WorldCerealDataset(Dataset):
         return center_point
 
     def _get_timestamps(self, row_d: Dict, timestep_positions: List[int]) -> np.ndarray:
-        start_date = pd.to_datetime(row_d["start_date"])
-        end_date = pd.to_datetime(row_d["end_date"])
+        start_date = datetime.strptime(row_d["start_date"], "%Y-%m-%d")
+        end_date = datetime.strptime(row_d["end_date"], "%Y-%m-%d")
+
         if self.timestep_freq == "month":
-            timestamps = pd.date_range(start=start_date, end=end_date, freq="MS")
+            days, months, years = get_monthly_timestamp_components(start_date, end_date)
         elif self.timestep_freq == "dekad":
-            timestamps = get_dekad_date_range(start_date, end_date)
+            days, months, years = get_dekad_timestamp_components(start_date, end_date)
         else:
             raise NotImplementedError()
 
-        timestamps = timestamps[timestep_positions]
-        return np.stack([timestamps.day, timestamps.month, timestamps.year], axis=1)
+        return np.stack(
+            [
+                days[timestep_positions],
+                months[timestep_positions],
+                years[timestep_positions],
+            ],
+            axis=1,
+        )
 
     def get_inputs(self, row_d: Dict, timestep_positions: List[int]) -> dict:
         # Get latlons
@@ -193,9 +200,8 @@ class WorldCerealDataset(Dataset):
 
         # Fill inputs
         for src_attr, dst_atr in self.BAND_MAPPING.items():
-            values = np.array(
-                [float(row_d[src_attr.format(t)]) for t in timestep_positions]
-            )
+            keys = [src_attr.format(t) for t in timestep_positions]
+            values = np.array([float(row_d[key]) for key in keys], dtype=np.float32)
             idx_valid = values != NODATAVALUE
             if dst_atr in S2_BANDS:
                 s2[..., S2_BANDS.index(dst_atr)] = values
@@ -335,14 +341,70 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         return label
 
 
-def get_dekad_date_range(start, end):
-    return pd.DatetimeIndex(
-        [_dekad_startdate_from_date(t) for t in _dekad_index(start, end)]
+def generate_month_sequence(start_date: datetime, end_date: datetime) -> np.ndarray:
+    """Helper function to generate a sequence of months between start_date and end_date.
+    This is much faster than using a pd.date_range().
+
+    Parameters
+    ----------
+    start_date : datetime
+        start of the sequence
+    end_date : datetime
+        end of the sequence
+
+    Returns
+    -------
+    array contaning the sequence of months
+
+    """
+    start = np.datetime64(start_date, "M")  # Truncate to month start
+    end = np.datetime64(end_date, "M")  # Truncate to month start
+    timestamps = np.arange(start, end + 1, dtype="datetime64[M]")
+
+    return timestamps
+
+
+def get_monthly_timestamp_components(
+    start_date: datetime, end_date: datetime
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Helper function to generate day/month/year components for
+    a sequence of months between start_date and end_date.
+
+    Parameters
+    ----------
+    start_date : datetime
+        start of the sequence
+    end_date : datetime
+        end of the sequence
+
+    Returns
+    -------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        tuple of day, month, year components for monthly sequence
+    """
+
+    timestamps = generate_month_sequence(start_date, end_date)
+    years = timestamps.astype("datetime64[Y]").astype(int) + 1970
+    months = timestamps.astype("datetime64[M]").astype(int) % 12 + 1
+    days = np.ones_like(years)  # All days are 1 for "MS" frequency
+
+    return days, months, years
+
+
+def get_dekad_timestamp_components(start_date, end_date):
+
+    timestamps = np.array(
+        [_dekad_startdate_from_date(t) for t in _dekad_timestamps(start_date, end_date)]
     )
+    years = np.array([t.year for t in timestamps])
+    months = np.array([t.month for t in timestamps])
+    days = np.array([t.day for t in timestamps])
+
+    return days, months, years
 
 
-def _dekad_index(begin, end):
-    """Creates a pandas datetime index on a dekadal basis.
+def _dekad_timestamps(begin, end):
+    """Creates a temporal sequence on a dekadal basis.
     Returns end date for each dekad.
     Based on: https://pytesmo.readthedocs.io/en/7.1/_modules/pytesmo/timedate/dekad.html  # NOQA
 
@@ -361,18 +423,13 @@ def _dekad_index(begin, end):
 
     import calendar
 
-    begin = pd.to_datetime(begin)
-    end = pd.to_datetime(end)
-
-    mon_begin = datetime(begin.year, begin.month, 1)
-    mon_end = datetime(end.year, end.month, 1)
-
-    daterange = pd.date_range(mon_begin, mon_end, freq="MS")
+    daterange = generate_month_sequence(begin, end)
 
     dates = []
 
     for i, dat in enumerate(daterange):
-        lday = calendar.monthrange(dat.year, dat.month)[1]
+        year, month = int(str(dat)[:4]), int(str(dat)[5:7])
+        lday = calendar.monthrange(year, month)[1]
         if i == 0 and begin.day > 1:
             if begin.day < 11:
                 if daterange.size == 1:
@@ -403,11 +460,9 @@ def _dekad_index(begin, end):
             dekads = [10, 20, lday]
 
         for j in dekads:
-            dates.append(datetime(dat.year, dat.month, j))
+            dates.append(datetime(year, month, j))
 
-    dtindex = pd.DatetimeIndex(dates)
-
-    return dtindex
+    return dates
 
 
 def _dekad_startdate_from_date(dt_in):

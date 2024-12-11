@@ -1,16 +1,17 @@
 from pathlib import Path
 from unittest import TestCase
 
+import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
 
-from prometheo.datasets import (
-    WorldCerealDataset,
-    WorldCerealLabelledDataset,
+from prometheo.datasets import WorldCerealDataset, WorldCerealLabelledDataset
+from prometheo.datasets.worldcereal import (
+    get_dekad_timestamp_components,
+    get_monthly_timestamp_components,
 )
 from prometheo.models import Presto
 from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
-
 
 models_to_test = [Presto]
 
@@ -133,3 +134,78 @@ class TestDataset(TestCase):
                 batch_size,
                 f"Forward pass failed for {model.__class__.__name__}",
             )
+
+    def test_get_monthly_timestamp_components(self):
+        # Test that the monthly timestamp components are correctly calculated
+        start_date = pd.to_datetime("2018-06-15")
+        end_date = pd.to_datetime("2019-10-25")
+        components = get_monthly_timestamp_components(start_date, end_date)
+        for c in components:
+            self.assertEqual(len(c), 17)  # We expect to get 17 months
+
+        # Monthly timesteps should always start on the first day of the month
+        self.assertTrue((components[0] == 1).all())
+
+        # Check if the month components have been built correctly
+        self.assertTrue(
+            (
+                components[1] == np.concatenate([np.arange(6, 13), np.arange(1, 11)])
+            ).all()
+        )
+
+        # Check if the year components have been built correctly
+        self.assertTrue(
+            (
+                components[2] == [2018 for _ in range(7)] + [2019 for _ in range(10)]
+            ).all()
+        )
+
+    def test_get_dekad_timestamp_components(self):
+        # Test that the dekad timestamp components are correctly calculated
+        start_date = pd.to_datetime("2018-06-15")
+        end_date = pd.to_datetime("2019-10-25")
+        components = get_dekad_timestamp_components(start_date, end_date)
+        for c in components:
+            self.assertEqual(len(c), 50)  # We expect to get 50 dekads
+
+        # Check if the day components have been built correctly
+        self.assertTrue((components[0] == [11, 21] + [1, 11, 21] * 16).all())
+
+        # Check if the month components have been built correctly
+        self.assertTrue(
+            (
+                components[1]
+                == [6, 6]
+                + [
+                    i
+                    for i in (list(range(7, 13)) + list(range(1, 11)))
+                    for _ in range(3)
+                ]
+            ).all()
+        )
+
+        # Check if the year components have been built correctly
+        self.assertTrue(
+            (
+                components[2] == [2018 for _ in range(20)] + [2019 for _ in range(30)]
+            ).all()
+        )
+
+    def test_WorldCerealDatasetTimestamps(self):
+        df = load_dataframe()
+        ds = WorldCerealDataset(df)
+
+        # Test that the timestamps are correctly transformed
+        row = pd.Series.to_dict(ds.dataframe.iloc[0, :])
+        timestamps = ds._get_timestamps(row, [ts for ts in range(12)])
+        self.assertTrue((timestamps[:, 0] == 1).all())
+        self.assertTrue(
+            (
+                timestamps[:, 1] == np.concatenate([np.arange(8, 13), np.arange(1, 8)])
+            ).all()
+        )
+        self.assertTrue(
+            (
+                timestamps[:, 2] == [2020 for _ in range(5)] + [2021 for _ in range(7)]
+            ).all()
+        )
