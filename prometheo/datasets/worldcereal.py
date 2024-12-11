@@ -398,7 +398,7 @@ def get_dekad_timestamp_components(start_date, end_date):
     )
     years = np.array([t.year for t in timestamps])
     months = np.array([t.month for t in timestamps])
-    days = np.ones_like(years)  # All days are 1 for "MS" frequency
+    days = np.array([t.day for t in timestamps])
 
     return days, months, years
 
