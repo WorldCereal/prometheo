@@ -34,7 +34,7 @@ def load_dataframe(timestep_freq="month"):
 
 
 class TestDataset(TestCase):
-    def check_batch(self, batch, batch_size, num_timesteps):
+    def check_batch(self, batch, batch_size, num_timesteps, num_outputs=1):
         self.assertEqual(
             batch.s1.shape, (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
         )
@@ -67,8 +67,9 @@ class TestDataset(TestCase):
             self.assertTrue(
                 any(
                     [
-                        batch.label.shape == (batch_size, 1, 1, num_timesteps, 1),
-                        batch.label.shape == (batch_size, 1, 1, 1, 1),
+                        batch.label.shape
+                        == (batch_size, 1, 1, num_timesteps, num_outputs),
+                        batch.label.shape == (batch_size, 1, 1, 1, num_outputs),
                     ]
                 )
             )
@@ -167,7 +168,7 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        self.check_batch(batch, batch_size, num_timesteps)
+        self.check_batch(batch, batch_size, num_timesteps, num_outputs=num_outputs)
 
         for model_cls in models_to_test:
             model = model_cls()
