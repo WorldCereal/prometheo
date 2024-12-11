@@ -11,7 +11,14 @@ from prometheo.datasets.worldcereal import (
     get_monthly_timestamp_components,
 )
 from prometheo.models import Presto
-from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
+from prometheo.predictors import (
+    DEM_BANDS,
+    METEO_BANDS,
+    NODATAVALUE,
+    S1_BANDS,
+    S2_BANDS,
+    collate_fn,
+)
 
 models_to_test = [Presto]
 
@@ -55,6 +62,17 @@ class TestDataset(TestCase):
         self.assertTrue((batch.latlon[:, 1] <= 180).all())
         self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
+        if batch.label is not None:
+            # Label should either have a single timestep or num_timesteps
+            self.assertTrue(
+                any(
+                    [
+                        batch.label.shape == (batch_size, 1, 1, num_timesteps, 1),
+                        batch.label.shape == (batch_size, 1, 1, 1, 1),
+                    ]
+                )
+            )
+
     def test_WorldCerealDataset(self):
         df = load_dataframe()
         ds = WorldCerealDataset(df)
@@ -91,13 +109,38 @@ class TestDataset(TestCase):
                 f"Forward pass failed for {model.__class__.__name__}",
             )
 
-    def test_WorldCerealLabelledDataset(self):
+    def test_WorldCerealLabelledDataset_time_explicit(self):
+        df = load_dataframe()
+        ds = WorldCerealLabelledDataset(df, augment=True, time_explicit=True)
+        batch_size = 2
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
+        batch = next(iter(dl))
+        self.check_batch(batch, batch_size, 12)
+
+        # Check time-explicit label: need to have 12 timesteps
+        self.assertEqual(batch.label.shape, (batch_size, 1, 1, 12, 1))
+        self.assertTrue((np.isin(batch.label.unique().numpy(), [0, NODATAVALUE])).all())
+
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
+
+    def test_WorldCerealLabelledDataset_unitemporal(self):
         df = load_dataframe()
         ds = WorldCerealLabelledDataset(df, augment=True)
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
         self.check_batch(batch, batch_size, 12)
+
+        # Check uni-temporal label: need to have 1 timesteps
+        self.assertEqual(batch.label.shape, (batch_size, 1, 1, 1, 1))
+        self.assertTrue((batch.label.unique().numpy() == 0).all())
 
         for model_cls in models_to_test:
             model = model_cls()
