@@ -3,8 +3,9 @@ from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
-from datasets.base import DatasetBase
-from src.predictors import (
+from torch.utils.data import Dataset
+
+from prometheo.predictors import (
     DEM_BANDS,
     METEO_BANDS,
     NODATAVALUE,
@@ -14,7 +15,7 @@ from src.predictors import (
 )
 
 
-class ScaleAGDataset(DatasetBase):
+class ScaleAGDataset(Dataset):
     BAND_MAPPING = {
         "OPTICAL-B02-ts{}-10m": "B2",
         "OPTICAL-B03-ts{}-10m": "B3",
@@ -41,18 +42,18 @@ class ScaleAGDataset(DatasetBase):
         task_type: Literal["regression", "binary", "multiclass", "ssl"],
         num_outputs: int,
         target_name: Optional[str] = None,
-        compositing_window: Literal["dek", "monthly"] = "monthly",
+        compositing_window: Literal["dekad", "monthly"] = "monthly",
+        time_explicit: bool = False,
         upper_bound: Optional[float] = None,
         lower_bound: Optional[float] = None,
     ):
-        super().__init__(
-            dataframe,
-            num_timesteps,
-            task_type,
-            num_outputs,
-        )
+        self.dataframe = dataframe.replace({np.nan: NODATAVALUE})
+        self.num_timesteps = num_timesteps
+        self.task_type = task_type
+        self.num_outputs = num_outputs
         self.target_name = target_name
         self.compositing_window = compositing_window
+        self.time_explicit = time_explicit
 
         # bound label values to valid range if upper and lower bounds are provided
         if task_type == "regression":
@@ -67,60 +68,45 @@ class ScaleAGDataset(DatasetBase):
 
         # most of downstream classifiers expect target to be provided as [0, num_classes - 1]
         if self.task_type == "multiclass":
-            self.class_to_index = {
-                label: idx
-                for idx, label in enumerate(self.dataframe[target_name].unique())
-            }
-            self.index_to_class = {
-                idx: label
-                for idx, label in enumerate(self.dataframe[target_name].unique())
-            }
+            # series allows direct mapping in case target is a list of values
+            self.class_to_index = pd.Series(
+                {
+                    label: idx
+                    for idx, label in enumerate(self.dataframe[target_name].unique())
+                }
+            )
+            self.index_to_class = pd.Series(
+                {
+                    idx: label
+                    for idx, label in enumerate(self.dataframe[target_name].unique())
+                }
+            )
 
     def get_predictors(self, row: pd.Series) -> Predictors:
         row_d = pd.Series.to_dict(row)
         latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
-        month = datetime.strptime(row_d["start_date"], "%Y-%m-%d").month
 
         # initialize sensor arrays filled with NODATAVALUE
-        s1 = np.full(
-            (1, 1, self.num_timesteps, len(S1_BANDS)),
-            fill_value=NODATAVALUE,
-            dtype=np.float32,
-        )
-        s2 = np.full(
-            (1, 1, self.num_timesteps, len(S2_BANDS)),
-            fill_value=NODATAVALUE,
-            dtype=np.float32,
-        )
-        meteo = np.full(
-            (self.num_timesteps, len(METEO_BANDS)),
-            fill_value=NODATAVALUE,
-            dtype=np.float32,
-        )
-        dem = np.full((1, 1, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32)
+        s1, s2, meteo, dem = self.initialize_inputs()
 
         # iterate over all bands and fill the corresponding arrays. convert to presto units if necessary
-        for df_val, presto_val in self.BAND_MAPPING.items():
+        for src_attr, dst_attr in self.BAND_MAPPING.items():
             # retrieve ts for each band column df_val
             values = np.array(
-                [float(row_d[df_val.format(t)]) for t in range(self.num_timesteps)]
+                [float(row_d[src_attr.format(t)]) for t in range(self.num_timesteps)]
             )
             values = np.nan_to_num(values, nan=NODATAVALUE)
             idx_valid = values != NODATAVALUE
-            if presto_val in S2_BANDS:
-                s2[..., S2_BANDS.index(presto_val)] = values
-            elif presto_val in S1_BANDS:
-                s1 = self.openeo_to_presto_units(s1, presto_val, values, idx_valid)
-            elif presto_val == "precipitation":
-                meteo = self.openeo_to_presto_units(
-                    meteo, presto_val, values, idx_valid
-                )
-            elif presto_val == "temperature":
-                meteo = self.openeo_to_presto_units(
-                    meteo, presto_val, values, idx_valid
-                )
-            elif presto_val in DEM_BANDS:
-                dem = self.openeo_to_presto_units(dem, presto_val, values, idx_valid)
+            if dst_attr in S2_BANDS:
+                s2[..., S2_BANDS.index(dst_attr)] = values
+            elif dst_attr in S1_BANDS:
+                s1 = self.openeo_to_presto_units(s1, dst_attr, values, idx_valid)
+            elif dst_attr == "precipitation":
+                meteo = self.openeo_to_presto_units(meteo, dst_attr, values, idx_valid)
+            elif dst_attr == "temperature":
+                meteo = self.openeo_to_presto_units(meteo, dst_attr, values, idx_valid)
+            elif dst_attr in DEM_BANDS:
+                dem = self.openeo_to_presto_units(dem, dst_attr, values, idx_valid)
 
         predictors_dict = {
             "s1": s1,
@@ -128,12 +114,10 @@ class ScaleAGDataset(DatasetBase):
             "meteo": meteo,
             "dem": dem,
             "latlon": latlon,
-            "month": (
-                self.get_month_array(row) if self.compositing_window == "dek" else month
-            ),
+            "timestamps": self.get_date_array(row),
         }
         if self.task_type != "ssl":
-            predictors_dict["label"] = self.get_target(row_d)
+            predictors_dict["label"] = self.get_label(row_d)
 
         return Predictors(**predictors_dict)
 
@@ -158,19 +142,42 @@ class ScaleAGDataset(DatasetBase):
         if date_vector[-1] > end_date:
             date_vector[-1] = end_date
         return np.stack(
-            np.array([d.day - 1 for d in date_vector]),
-            np.array([d.month - 1 for d in date_vector]),
-            np.array([d.year - 1 for d in date_vector]),
+            [
+                np.array([d.day for d in date_vector]),
+                np.array([d.month for d in date_vector]),
+                np.array([d.year for d in date_vector]),
+            ],
+            axis=1,
         )
 
-    def get_target(self, row_d: pd.Series) -> np.ndarray:
-        target = int(row_d[self.target_name])
+    def sample_dates(date_vector):
+        # for cases where num timesteps is not 12 or 36 (monthly or dekad).
+        # we might want to sample dates from the date vector afterwards
+        pass
+
+    def get_label(self, row_d: pd.Series, valid_positions: Optional[int]) -> np.ndarray:
+        target = np.array(row_d[self.target_name])
+        time_dim = self.num_timesteps if self.time_explicit else 1
+        valid_idx = valid_positions or np.arange(time_dim)
+
+        # we need a label for each time step
+        assert target.size == time_dim
+
+        labels = np.full(
+            (1, 1, time_dim, self.num_outputs),
+            fill_value=NODATAVALUE,
+            dtype=np.int32,
+        )
+
         if self.task_type == "regression":
             target = self.normalize_target(target)
         # convert classes to indices for multiclass
         elif self.task_type == "multiclass":
             target = self.class_to_index[target]
-        return np.array(target)
+            if target.size > 1:
+                target = target.to_numpy()
+        labels[0, 0, valid_idx, :] = target
+        return labels
 
     def normalize_target(self, target):
         return (target - self.lower_bound) / (self.upper_bound - self.lower_bound)
@@ -178,23 +185,42 @@ class ScaleAGDataset(DatasetBase):
     def revert_to_original_units(self, target_norm):
         return target_norm * (self.upper_bound - self.lower_bound) + self.lower_bound
 
-    def openeo_to_presto_units(self, band_array, presto_band, values, idx_valid):
-        if presto_band in S1_BANDS:
+    def openeo_to_presto_units(self, band_array, band, values, idx_valid):
+        if band in S1_BANDS:
             # convert to dB
             idx_valid = idx_valid & (values > 0)
             values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
-            band_array[..., S1_BANDS.index(presto_band)] = values * idx_valid
-
-        elif presto_band == "precipitation":
+            band_array[..., S1_BANDS.index(band)] = values
+        elif band == "precipitation":
             # scaling, and AgERA5 is in mm, Presto expects m
             values[idx_valid] = values[idx_valid] / (100 * 1000.0)
-            band_array[..., METEO_BANDS.index(presto_band)] = values * idx_valid
-
-        elif presto_band == "temperature":
+            band_array[..., METEO_BANDS.index(band)] = values
+        elif band == "temperature":
             # remove scaling. conversion to celsius is done in the normalization
             values[idx_valid] = values[idx_valid] / 100
-            band_array[..., METEO_BANDS.index(presto_band)] = values * idx_valid
-        elif presto_band in DEM_BANDS:
-            band_array[..., DEM_BANDS.index(presto_band)] = values[0]
+            band_array[..., METEO_BANDS.index(band)] = values
+        elif band in DEM_BANDS:
+            band_array[..., DEM_BANDS.index(band)] = values[0]
+        else:
+            raise ValueError(f"Unknown band {band}")
 
         return band_array
+
+    def initialize_inputs(self):
+        s1 = np.full(
+            (1, 1, self.num_timesteps, len(S1_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )
+        s2 = np.full(
+            (1, 1, self.num_timesteps, len(S2_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )
+        meteo = np.full(
+            (self.num_timesteps, len(METEO_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )
+        dem = np.full((1, 1, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32)
+        return s1, s2, meteo, dem
