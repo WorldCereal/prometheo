@@ -51,7 +51,7 @@ class ScaleAGDataset(Dataset):
         self.dataframe = dataframe.replace({np.nan: NODATAVALUE})
         self.num_timesteps = num_timesteps
         self.task_type = task_type
-        self.num_outputs = self.set_num_outputs()
+        self.num_outputs = self.get_num_outputs()
         self.target_name = target_name
         self.pos_labels = pos_labels
         self.compositing_window = compositing_window
@@ -87,20 +87,20 @@ class ScaleAGDataset(Dataset):
         if self.task_type == "binary" and pos_labels is not None:
             # mapping for binary classification. this gives the user the flexibility to indicate which labels
             # or set of labels should be appointed as positive class
-            self.convert_to_binary = pd.Series(
+            self.binary_mapping = pd.Series(
                 {
                     bin_cl: 1 if bin_cl in pos_labels else 0
                     for bin_cl in self.dataframe[target_name].unique()
                 }
             )
 
-    def set_num_outputs(self):
+    def get_num_outputs(self):
         if self.task_type in ["binary", "regression"]:
-            self.num_outputs = 1
+            return 1
         elif self.task_type == "multiclass":
-            self.num_outputs = len(self.dataframe[self.target_name].unique())
+            return len(self.dataframe[self.target_name].unique())
         elif self.task_type == "ssl":
-            self.num_outputs = None
+            return None
 
     def get_predictors(self, row: pd.Series) -> Predictors:
         row_d = pd.Series.to_dict(row)
@@ -192,8 +192,11 @@ class ScaleAGDataset(Dataset):
 
         elif self.task_type == "binary":
             if self.pos_labels is not None:
-                target = self.convert_to_binary(target)
-            assert target in [0, 1]
+                target = self.binary_mapping[target]
+            assert target in [
+                0,
+                1,
+            ], f"Invalid target value: {target}. Target must be either 0 or 1. Please provide pos_labels list."
 
         # convert classes to indices for multiclass
         elif self.task_type == "multiclass":

@@ -121,7 +121,7 @@ class TestDataset(TestCase):
 
         # Check uni-temporal label: need to have 1 timestep
         self.assertEqual(batch.label.shape, (batch_size, 1, 1, 1, 1))
-        self.assertTrue((batch.label.unique().numpy() == 0).all())
+        self.assertTrue((batch.label.unique().numpy() == [0, 1]).all())
 
         for model_cls in models_to_test:
             model = model_cls()
@@ -135,14 +135,14 @@ class TestDataset(TestCase):
     def test_ScaleAGLabelledDataset_10D(self):
         # Test dekadal version of labelled worldcereal dataset
         df = load_dataframe(timestep_freq="dekad")
-        num_outputs = 2
+        num_outputs = 1  # 2???
         num_timesteps = 36
         ds = ScaleAGDataset(
             df,
             num_timesteps=num_timesteps,
             task_type="binary",
-            num_outputs=1,
             target_name="LANDCOVER_LABEL",
+            pos_labels=[10, 11, 12, 13],
         )
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
