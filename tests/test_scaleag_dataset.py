@@ -157,3 +157,65 @@ class TestDataset(TestCase):
                 batch_size,
                 f"Forward pass failed for {model.__class__.__name__}",
             )
+
+    def test_ScaleAGLabelledDataset_regression(self):
+        # Test dekadal version of labelled worldcereal dataset
+        df = load_dataframe()
+        ds = ScaleAGDataset(
+            df,
+            task_type="regression",
+            target_name="LANDCOVER_LABEL",
+        )
+        batch_size = 2
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
+        batch = next(iter(dl))
+        self.check_batch(batch, batch_size, 12, num_outputs=1)
+        self.assertTrue(
+            (
+                (batch.label.max().numpy() == 1) and (batch.label.min().numpy() == 0)
+            ).all()
+        )
+
+        # test that assertion on type of regression target works
+        df_str = df.copy()
+        df_str.LANDCOVER_LABEL = df_str.LANDCOVER_LABEL.astype(str)
+        with self.assertRaises(AssertionError) as regression_error:
+            ScaleAGDataset(
+                df_str,
+                task_type="regression",
+                target_name="LANDCOVER_LABEL",
+            )
+            self.assertEqual(
+                str(regression_error.exception),
+                "Regression target must be of type float or int",
+            )
+
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
+
+    def test_ScaleAGLabelledDataset_multiclass(self):
+        df = load_dataframe()
+        num_outputs = len(df.LANDCOVER_LABEL.unique())
+        ds = ScaleAGDataset(
+            df,
+            num_outputs=num_outputs,
+            task_type="multiclass",
+            target_name="LANDCOVER_LABEL",
+        )
+
+        batch_size = 2
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
+        batch = next(iter(dl))
+        self.check_batch(batch, batch_size, 12, num_outputs=num_outputs)
+
+        # checking that the the class mapping to indices is correct
+        self.assertTrue((batch.label.unique().numpy() == [0, 1]).all())
+        self.assertTrue(
+            (ds.dataframe.iloc[:batch_size].LANDCOVER_LABEL == [99, 13]).all()
+        )
