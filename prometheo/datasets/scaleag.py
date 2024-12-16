@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta
-from typing import Literal, Optional
+from typing import Any, List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -38,10 +38,11 @@ class ScaleAGDataset(Dataset):
     def __init__(
         self,
         dataframe: pd.DataFrame,
-        num_timesteps: int,
-        task_type: Literal["regression", "binary", "multiclass", "ssl"],
-        num_outputs: int,
+        num_timesteps: int = 12,
+        task_type: Literal["regression", "binary", "multiclass", "ssl"] = "ssl",
+        # num_outputs: Optional[int] = None,
         target_name: Optional[str] = None,
+        pos_labels: Optional[Union[List[Any], Any]] = None,
         compositing_window: Literal["dekad", "monthly"] = "monthly",
         time_explicit: bool = False,
         upper_bound: Optional[float] = None,
@@ -50,8 +51,9 @@ class ScaleAGDataset(Dataset):
         self.dataframe = dataframe.replace({np.nan: NODATAVALUE})
         self.num_timesteps = num_timesteps
         self.task_type = task_type
-        self.num_outputs = num_outputs
+        self.num_outputs = self.set_num_outputs()
         self.target_name = target_name
+        self.pos_labels = pos_labels
         self.compositing_window = compositing_window
         self.time_explicit = time_explicit
 
@@ -81,6 +83,24 @@ class ScaleAGDataset(Dataset):
                     for idx, label in enumerate(self.dataframe[target_name].unique())
                 }
             )
+
+        if self.task_type == "binary" and pos_labels is not None:
+            # mapping for binary classification. this gives the user the flexibility to indicate which labels
+            # or set of labels should be appointed as positive class
+            self.convert_to_binary = pd.Series(
+                {
+                    bin_cl: 1 if bin_cl in pos_labels else 0
+                    for bin_cl in self.dataframe[target_name].unique()
+                }
+            )
+
+    def set_num_outputs(self):
+        if self.task_type in ["binary", "regression"]:
+            self.num_outputs = 1
+        elif self.task_type == "multiclass":
+            self.num_outputs = len(self.dataframe[self.target_name].unique())
+        elif self.task_type == "ssl":
+            self.num_outputs = None
 
     def get_predictors(self, row: pd.Series) -> Predictors:
         row_d = pd.Series.to_dict(row)
@@ -126,6 +146,9 @@ class ScaleAGDataset(Dataset):
         row = self.dataframe.iloc[idx, :]
         return self.get_predictors(row)
 
+    def __len__(self):
+        return len(self.dataframe)
+
     def get_date_array(self, row: pd.Series) -> np.ndarray:
         start_date, end_date = (
             datetime.strptime(row.start_date, "%Y-%m-%d"),
@@ -150,27 +173,28 @@ class ScaleAGDataset(Dataset):
             axis=1,
         )
 
-    def sample_dates(date_vector):
-        # for cases where num timesteps is not 12 or 36 (monthly or dekad).
-        # we might want to sample dates from the date vector afterwards
-        pass
-
-    def get_label(self, row_d: pd.Series, valid_positions: Optional[int]) -> np.ndarray:
+    def get_label(
+        self, row_d: pd.Series, valid_positions: Optional[int] = None
+    ) -> np.ndarray:
         target = np.array(row_d[self.target_name])
-        time_dim = self.num_timesteps if self.time_explicit else 1
+        if self.time_explicit:
+            raise NotImplementedError("Time explicit labels not yet implemented")
+        time_dim = 1
         valid_idx = valid_positions or np.arange(time_dim)
-
-        # we need a label for each time step
-        assert target.size == time_dim
 
         labels = np.full(
             (1, 1, time_dim, self.num_outputs),
             fill_value=NODATAVALUE,
             dtype=np.int32,
         )
-
         if self.task_type == "regression":
             target = self.normalize_target(target)
+
+        elif self.task_type == "binary":
+            if self.pos_labels is not None:
+                target = self.convert_to_binary(target)
+            assert target in [0, 1]
+
         # convert classes to indices for multiclass
         elif self.task_type == "multiclass":
             target = self.class_to_index[target]
