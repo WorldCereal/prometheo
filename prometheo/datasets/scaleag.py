@@ -238,7 +238,8 @@ class ScaleAGDataset(Dataset):
                 np.array([d.day for d in date_vector]),
                 np.array([d.month for d in date_vector]),
                 np.array([d.year for d in date_vector]),
-            ]
+            ],
+            axis=1,
         )
 
     def get_label(
