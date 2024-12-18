@@ -40,7 +40,7 @@ class ScaleAGDataset(Dataset):
         dataframe: pd.DataFrame,
         num_timesteps: int = 12,
         task_type: Literal["regression", "binary", "multiclass", "ssl"] = "ssl",
-        # num_outputs: Optional[int] = None,
+        num_outputs: Optional[int] = None,
         target_name: Optional[str] = None,
         pos_labels: Optional[Union[List[Any], Any]] = None,
         compositing_window: Literal["dekad", "monthly"] = "monthly",
@@ -51,14 +51,23 @@ class ScaleAGDataset(Dataset):
         self.dataframe = dataframe.replace({np.nan: NODATAVALUE})
         self.num_timesteps = num_timesteps
         self.task_type = task_type
-        self.num_outputs = self.get_num_outputs()
+        self.num_outputs = (
+            self.get_num_outputs() if num_outputs is None else num_outputs
+        )
         self.target_name = target_name
         self.pos_labels = pos_labels
         self.compositing_window = compositing_window
         self.time_explicit = time_explicit
 
-        # bound label values to valid range if upper and lower bounds are provided
+        # assess label type and bound label values to valid range if upper and lower bounds are provided
         if task_type == "regression":
+            assert self.dataframe[target_name].dtype in [
+                np.float32,
+                np.float64,
+                np.int32,
+                np.int64,
+            ], "Regression target must be of type float or int"
+
             if upper_bound is None or lower_bound is None:
                 upper_bound = self.dataframe[target_name].max()
                 lower_bound = self.dataframe[target_name].min()
@@ -149,21 +158,73 @@ class ScaleAGDataset(Dataset):
     def __len__(self):
         return len(self.dataframe)
 
-    def get_date_array(self, row: pd.Series) -> np.ndarray:
-        start_date, end_date = (
-            datetime.strptime(row.start_date, "%Y-%m-%d"),
-            datetime.strptime(row.end_date, "%Y-%m-%d"),
-        )
+    def _get_correct_date(self, dt_in):
+        """
+        Determine the correct date based on the input date and compositing window.
+        Args:
+            dt_in (datetime): The input date.
+        Returns:
+            datetime: The corrected date based on the compositing window.
+        Raises:
+            ValueError: If the compositing window is not "dekad" or "monthly".
+        Notes:
+        - For "dekad" compositing window:
+            - If the day of the month is between 1 and 10, the correct date is the 1st of the month.
+            - If the day of the month is between 11 and 20, the correct date is the 11th of the month.
+            - If the day of the month is between 21 and the end of the month, the correct date is the 21st of the month.
+        - For "monthly" compositing window, the correct date is always the 1st of the month.
+        """
 
-        # Calculate the step size for 10-day intervals and create a list of dates
-        step = int((end_date - start_date).days / (self.num_timesteps - 1))
-        date_vector = [
-            start_date + timedelta(days=i * step) for i in range(self.num_timesteps)
-        ]
+        if self.compositing_window == "dekad":
+            if dt_in.day <= 10:
+                correct_date = datetime(dt_in.year, dt_in.month, 1, 0, 0, 0)
+            if dt_in.day >= 11 and dt_in.day <= 20:
+                correct_date = datetime(dt_in.year, dt_in.month, 11, 0, 0, 0)
+            if dt_in.day >= 21:
+                correct_date = datetime(dt_in.year, dt_in.month, 21, 0, 0, 0)
+        elif self.compositing_window == "monthly":
+            correct_date = datetime(dt_in.year, dt_in.month, 1, 0, 0, 0)
+        else:
+            raise ValueError(f"Unknown compositing window: {self.compositing_window}")
 
-        # Ensure last date is not beyond the end date
-        if date_vector[-1] > end_date:
-            date_vector[-1] = end_date
+        return correct_date
+
+    def _get_following_date(self, dt_in):
+        """
+        Calculate the following date based on the given compositing window.
+        Args:
+            dt_in (datetime): The input date.
+        Returns:
+            datetime: The calculated following date.
+        Raises:
+            ValueError: f the compositing window is not "dekad" or "monthly".
+        """
+
+        if self.compositing_window == "dekad":
+            if dt_in.day < 21:
+                return datetime(dt_in.year, dt_in.month, dt_in.day + 10, 0, 0, 0)
+            else:
+                month = dt_in.month + 1 if dt_in.month < 12 else 1
+                year = dt_in.year + 1 if month == 1 else dt_in.year
+                return datetime(year, month, 1, 0, 0, 0)
+        elif self.compositing_window == "monthly":
+            month = dt_in.month + 1 if dt_in.month < 12 else 1
+            year = dt_in.year + 1 if month == 1 else dt_in.year
+            return datetime(year, month, 1, 0, 0, 0)
+        else:
+            raise ValueError(f"Unknown compositing window: {self.compositing_window}")
+
+    def get_date_array(self, row):
+        # set correct initial and end dates
+        start_date = self._get_correct_date(row.start_date)
+        end_date = self._get_correct_date(row.end_date)
+
+        # generate date vector based on compositing window
+        date_vector = [start_date]
+        while start_date != end_date:
+            start_date = self._get_following_date(start_date)
+            date_vector.append(start_date)
+
         return np.stack(
             [
                 np.array([d.day for d in date_vector]),
