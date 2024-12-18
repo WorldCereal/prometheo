@@ -219,3 +219,53 @@ class TestDataset(TestCase):
         self.assertTrue(
             (ds.dataframe.iloc[:batch_size].LANDCOVER_LABEL == [99, 13]).all()
         )
+
+    def test_ScaleAGDataset_10D_Timestamps(self):
+        # Test that the dekad timestamp components are correctly calculated
+        df = load_dataframe(timestep_freq="dekad")
+        num_timesteps = 50
+        ds = ScaleAGDataset(df, num_timesteps, compositing_window="dekad")
+        row = ds.dataframe.iloc[0]
+        row.start_date = "2018-06-15"
+        row.end_date = "2019-10-25"
+        components = ds.get_date_array(row)
+        for c in components:
+            self.assertEqual(len(c), num_timesteps)  # We expect to get 50 dekads
+
+        # Check if the day components have been built correctly
+        self.assertTrue((components[0] == [11, 21] + [1, 11, 21] * 16).all())
+
+        # Check if the month components have been built correctly
+        self.assertTrue(
+            (
+                components[1]
+                == [6, 6]
+                + [
+                    i
+                    for i in (list(range(7, 13)) + list(range(1, 11)))
+                    for _ in range(3)
+                ]
+            ).all()
+        )
+
+        # Check if the year components have been built correctly
+        self.assertTrue(
+            (
+                components[2] == [2018 for _ in range(20)] + [2019 for _ in range(30)]
+            ).all()
+        )
+
+    def test_ScaleAGDatasetTimestamps(self):
+        df = load_dataframe()
+        ds = ScaleAGDataset(df)
+
+        # Test that the timestamps are correctly transformed
+        row = ds.dataframe.iloc[0, :]
+        timestamps = ds.get_date_array(row)
+        self.assertTrue((timestamps[0] == 1).all())
+        self.assertTrue(
+            (timestamps[1] == np.concatenate([np.arange(8, 13), np.arange(1, 8)])).all()
+        )
+        self.assertTrue(
+            (timestamps[2] == [2020 for _ in range(5)] + [2021 for _ in range(7)]).all()
+        )

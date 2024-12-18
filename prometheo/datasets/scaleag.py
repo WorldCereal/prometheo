@@ -216,8 +216,10 @@ class ScaleAGDataset(Dataset):
 
     def get_date_array(self, row):
         # set correct initial and end dates
-        start_date = self._get_correct_date(row.start_date)
-        end_date = self._get_correct_date(row.end_date)
+        start_date = pd.to_datetime(row.start_date)
+        end_date = pd.to_datetime(row.end_date)
+        start_date = self._get_correct_date(start_date)
+        end_date = self._get_correct_date(end_date)
 
         # generate date vector based on compositing window
         date_vector = [start_date]
@@ -225,13 +227,18 @@ class ScaleAGDataset(Dataset):
             start_date = self._get_following_date(start_date)
             date_vector.append(start_date)
 
+        # truncate date vector on the end side if it exceeds the number of timesteps
+        # this strategy currently does not give the freedom to chose which timestamps to keep
+        # it might need to be adjusted in the future
+        if self.num_timesteps < len(date_vector):
+            date_vector = date_vector[: self.num_timesteps]
+
         return np.stack(
             [
                 np.array([d.day for d in date_vector]),
                 np.array([d.month for d in date_vector]),
                 np.array([d.year for d in date_vector]),
-            ],
-            axis=1,
+            ]
         )
 
     def get_label(
