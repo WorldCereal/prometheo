@@ -7,14 +7,7 @@ from torch.utils.data import DataLoader
 
 from prometheo.datasets import ScaleAGDataset
 from prometheo.models import Presto
-from prometheo.predictors import (
-    DEM_BANDS,
-    METEO_BANDS,
-    NODATAVALUE,
-    S1_BANDS,
-    S2_BANDS,
-    collate_fn,
-)
+from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
 
 models_to_test = [Presto]
 
