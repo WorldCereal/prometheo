@@ -1,4 +1,4 @@
-from .scaleag import ScaleAGDataset
+from .scaleag import ScaleAgDataset
 from .worldcereal import WorldCerealDataset, WorldCerealLabelledDataset
 
-__all__ = ["WorldCerealDataset", "WorldCerealLabelledDataset", "ScaleAGDataset"]
+__all__ = ["WorldCerealDataset", "WorldCerealLabelledDataset", "ScaleAgDataset"]

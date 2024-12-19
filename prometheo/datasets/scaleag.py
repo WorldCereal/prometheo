@@ -3,6 +3,7 @@ from typing import Any, List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 from torch.utils.data import Dataset
 
 from prometheo.predictors import (
@@ -15,7 +16,7 @@ from prometheo.predictors import (
 )
 
 
-class ScaleAGDataset(Dataset):
+class ScaleAgDataset(Dataset):
     BAND_MAPPING = {
         "OPTICAL-B02-ts{}-10m": "B2",
         "OPTICAL-B03-ts{}-10m": "B3",
@@ -38,24 +39,57 @@ class ScaleAGDataset(Dataset):
     def __init__(
         self,
         dataframe: pd.DataFrame,
-        num_timesteps: int = 12,
+        num_timesteps: int = 36,
         task_type: Literal["regression", "binary", "multiclass", "ssl"] = "ssl",
         num_outputs: Optional[int] = None,
         target_name: Optional[str] = None,
-        pos_labels: Optional[Union[List[Any], Any]] = None,
-        compositing_window: Literal["dekad", "monthly"] = "monthly",
+        positive_labels: Optional[Union[List[Any], Any]] = None,
+        compositing_window: Literal["dekad", "monthly"] = "dekad",
         time_explicit: bool = False,
         upper_bound: Optional[float] = None,
         lower_bound: Optional[float] = None,
     ):
+        """
+        Initialize the dataset object.
+        Parameters:
+        -----------
+        dataframe : pd.DataFrame
+            The input dataframe containing the dataset.
+        num_timesteps : int, optional
+            Number of timesteps to consider, by default 36.
+        task_type : Literal["regression", "binary", "multiclass", "ssl"], optional
+            Type of task to perform, by default self-supervised-learning "ssl".
+        num_outputs : Optional[int], optional
+            Number of output classes, by default None.
+            - for binary and regression tasks, independently on the value provided, num_outputs is enforced to be 1.
+            - for multiclass task, if this value is not provided, num_outputs is set to be the number of unique classes in the target column.
+        target_name : Optional[str], optional
+            Name of the target column, by default None.
+        positive_labels : Optional[Union[List[Any], Any]], optional
+            Positive labels for binary classification, by default None.
+        compositing_window : Literal["dekad", "monthly"], optional
+            Compositing window type, by default "dekad".
+        time_explicit : bool, optional
+            Defines how to handle time dimension for the label predictor.
+            If True, itr indicates each example is associated with time-dependent labels.
+            Hence, the time dimension for the label predictor will be set accordingly.
+            If False, the label time dimension is set to 1.
+            By default False.
+        upper_bound : Optional[float], optional
+            Upper bound for target values in regression tasks, by default None.
+            If no upper bound is provided, the maximum value of the target column is used.
+        lower_bound : Optional[float], optional
+            Lower bound for target values in regression tasks, by default None.
+            If no lower bound is provided, the minimum value of the target column is used.
+        """
         self.dataframe = dataframe.replace({np.nan: NODATAVALUE})
         self.num_timesteps = num_timesteps
         self.task_type = task_type
-        self.num_outputs = (
-            self.get_num_outputs() if num_outputs is None else num_outputs
-        )
         self.target_name = target_name
-        self.pos_labels = pos_labels
+        self.positive_labels = positive_labels
+        self.num_outputs = (
+            None if task_type == "ssl" else self.set_num_outputs(num_outputs)
+        )
         self.compositing_window = compositing_window
         self.time_explicit = time_explicit
 
@@ -64,9 +98,7 @@ class ScaleAGDataset(Dataset):
             assert self.dataframe[target_name].dtype in [
                 np.float32,
                 np.float64,
-                np.int32,
-                np.int64,
-            ], "Regression target must be of type float or int"
+            ], "Regression target must be of type float"
 
             if upper_bound is None or lower_bound is None:
                 upper_bound = self.dataframe[target_name].max()
@@ -93,23 +125,32 @@ class ScaleAGDataset(Dataset):
                 }
             )
 
-        if self.task_type == "binary" and pos_labels is not None:
+        if self.task_type == "binary" and positive_labels is not None:
             # mapping for binary classification. this gives the user the flexibility to indicate which labels
             # or set of labels should be appointed as positive class
             self.binary_mapping = pd.Series(
                 {
-                    bin_cl: 1 if bin_cl in pos_labels else 0
+                    bin_cl: 1 if bin_cl in positive_labels else 0
                     for bin_cl in self.dataframe[target_name].unique()
                 }
             )
 
-    def get_num_outputs(self):
+    def set_num_outputs(self, num_outputs: Optional[int]) -> Optional[int]:
         if self.task_type in ["binary", "regression"]:
+            if num_outputs != 1 and num_outputs is not None:
+                logger.warning(
+                    f"Number of outputs for regression and binary tasks is always set to 1."
+                )
             return 1
         elif self.task_type == "multiclass":
-            return len(self.dataframe[self.target_name].unique())
-        elif self.task_type == "ssl":
-            return None
+            if num_outputs is None:
+                logger.warning(
+                    f"Number of outputs for multiclass task not provided."
+                    "Setting to the number of classes found in the dataset."
+                )
+                return len(self.dataframe[self.target_name].unique())
+            else:
+                return num_outputs
 
     def get_predictors(self, row: pd.Series) -> Predictors:
         row_d = pd.Series.to_dict(row)
@@ -129,13 +170,17 @@ class ScaleAGDataset(Dataset):
             if dst_attr in S2_BANDS:
                 s2[..., S2_BANDS.index(dst_attr)] = values
             elif dst_attr in S1_BANDS:
-                s1 = self.openeo_to_presto_units(s1, dst_attr, values, idx_valid)
+                s1 = self.openeo_to_prometheo_units(s1, dst_attr, values, idx_valid)
             elif dst_attr == "precipitation":
-                meteo = self.openeo_to_presto_units(meteo, dst_attr, values, idx_valid)
+                meteo = self.openeo_to_prometheo_units(
+                    meteo, dst_attr, values, idx_valid
+                )
             elif dst_attr == "temperature":
-                meteo = self.openeo_to_presto_units(meteo, dst_attr, values, idx_valid)
+                meteo = self.openeo_to_prometheo_units(
+                    meteo, dst_attr, values, idx_valid
+                )
             elif dst_attr in DEM_BANDS:
-                dem = self.openeo_to_presto_units(dem, dst_attr, values, idx_valid)
+                dem = self.openeo_to_prometheo_units(dem, dst_attr, values, idx_valid)
 
         predictors_dict = {
             "s1": s1,
@@ -232,6 +277,10 @@ class ScaleAGDataset(Dataset):
         # it might need to be adjusted in the future
         if self.num_timesteps < len(date_vector):
             date_vector = date_vector[: self.num_timesteps]
+            logger.warning(
+                "The number of timesteps is smaller than the number of available dates. "
+                f"Replace end date {end_date.date()} to {date_vector[-1].date()}."
+            )
 
         return np.stack(
             [
@@ -260,7 +309,7 @@ class ScaleAGDataset(Dataset):
             target = self.normalize_target(target)
 
         elif self.task_type == "binary":
-            if self.pos_labels is not None:
+            if self.positive_labels is not None:
                 target = self.binary_mapping[target]
             assert target in [
                 0,
@@ -281,7 +330,7 @@ class ScaleAGDataset(Dataset):
     def revert_to_original_units(self, target_norm):
         return target_norm * (self.upper_bound - self.lower_bound) + self.lower_bound
 
-    def openeo_to_presto_units(self, band_array, band, values, idx_valid):
+    def openeo_to_prometheo_units(self, band_array, band, values, idx_valid):
         if band in S1_BANDS:
             # convert to dB
             idx_valid = idx_valid & (values > 0)

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from torch.utils.data import DataLoader
 
-from prometheo.datasets import ScaleAGDataset
+from prometheo.datasets import ScaleAgDataset
 from prometheo.models import Presto
 from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
 
@@ -63,9 +63,12 @@ class TestDataset(TestCase):
                 )
             )
 
-    def test_ScaleAGDataset(self):
+    def test_ScaleAgDataset_30D(self):
         df = load_dataframe()
-        ds = ScaleAGDataset(df)
+        num_timesteps = 12
+        ds = ScaleAgDataset(
+            df, num_timesteps=num_timesteps, compositing_window="monthly"
+        )
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
@@ -80,11 +83,11 @@ class TestDataset(TestCase):
                 f"Forward pass failed for {model.__class__.__name__}",
             )
 
-    def test_ScaleAGDataset_10D(self):
+    def test_ScaleAgDataset_10D(self):
         # Test dekadal version of worldcereal dataset
         df = load_dataframe(timestep_freq="dekad")
         num_timesteps = 36
-        ds = ScaleAGDataset(df, num_timesteps=num_timesteps, compositing_window="dekad")
+        ds = ScaleAgDataset(df, num_timesteps=num_timesteps, compositing_window="dekad")
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
@@ -99,13 +102,15 @@ class TestDataset(TestCase):
                 f"Forward pass failed for {model.__class__.__name__}",
             )
 
-    def test_ScaleAGDataset_unitemporal_labelled(self):
+    def test_ScaleAgDataset_unitemporal_labelled(self):
         df = load_dataframe()
-        ds = ScaleAGDataset(
+        ds = ScaleAgDataset(
             df,
+            num_timesteps=12,
             task_type="binary",
             target_name="LANDCOVER_LABEL",
-            pos_labels=[10, 11, 12, 13],
+            positive_labels=[10, 11, 12, 13],
+            compositing_window="monthly",
         )
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
@@ -125,17 +130,69 @@ class TestDataset(TestCase):
                 f"Forward pass failed for {model.__class__.__name__}",
             )
 
+    def test_ScaleAgDataset_num_outputs(self):
+        df = load_dataframe()
+        num_outputs = 10
+        ds = ScaleAgDataset(
+            df,
+            num_timesteps=12,
+            task_type="binary",
+            target_name="LANDCOVER_LABEL",
+            positive_labels=[10, 11, 12, 13],
+            num_outputs=num_outputs,
+            compositing_window="monthly",
+        )
+        # Check that num_output is properly set for the binary case
+        self.assertTrue(ds.num_outputs == 1)
+
+        df["regression_label"] = np.random.rand(len(df))
+        ds = ScaleAgDataset(
+            df,
+            num_timesteps=12,
+            task_type="regression",
+            target_name="regression_label",
+            num_outputs=num_outputs,
+            compositing_window="monthly",
+        )
+        # Check that num_output is properly set for the regression case
+        self.assertTrue(ds.num_outputs == 1)
+
+        ds = ScaleAgDataset(
+            df,
+            num_timesteps=12,
+            task_type="multiclass",
+            target_name="LANDCOVER_LABEL",
+            positive_labels=[10, 11, 12, 13],
+            num_outputs=num_outputs,
+            compositing_window="monthly",
+        )
+        # Check that num_output is properly set for the multiclass case
+        self.assertTrue(ds.num_outputs == num_outputs)
+
+        num_outputs = None
+        ds = ScaleAgDataset(
+            df,
+            num_timesteps=12,
+            task_type="multiclass",
+            target_name="LANDCOVER_LABEL",
+            positive_labels=[10, 11, 12, 13],
+            num_outputs=num_outputs,
+            compositing_window="monthly",
+        )
+        # Check that num_output is properly set for the multiclass case when num_outputs is None
+        self.assertTrue(ds.num_outputs == len(df.LANDCOVER_LABEL.unique()))
+
     def test_ScaleAGLabelledDataset_10D(self):
         # Test dekadal version of labelled worldcereal dataset
         df = load_dataframe(timestep_freq="dekad")
-        num_outputs = 1  # 2???
+        num_outputs = 1
         num_timesteps = 36
-        ds = ScaleAGDataset(
+        ds = ScaleAgDataset(
             df,
             num_timesteps=num_timesteps,
             task_type="binary",
             target_name="LANDCOVER_LABEL",
-            pos_labels=[10, 11, 12, 13],
+            positive_labels=[10, 11, 12, 13],
             compositing_window="dekad",
         )
         batch_size = 2
@@ -155,10 +212,13 @@ class TestDataset(TestCase):
     def test_ScaleAGLabelledDataset_regression(self):
         # Test dekadal version of labelled worldcereal dataset
         df = load_dataframe()
-        ds = ScaleAGDataset(
+        df["LANDCOVER_LABEL"] = df["LANDCOVER_LABEL"].astype(float)
+        ds = ScaleAgDataset(
             df,
+            num_timesteps=12,
             task_type="regression",
             target_name="LANDCOVER_LABEL",
+            compositing_window="monthly",
         )
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
@@ -174,14 +234,14 @@ class TestDataset(TestCase):
         df_str = df.copy()
         df_str.LANDCOVER_LABEL = df_str.LANDCOVER_LABEL.astype(str)
         with self.assertRaises(AssertionError) as regression_error:
-            ScaleAGDataset(
+            ScaleAgDataset(
                 df_str,
                 task_type="regression",
                 target_name="LANDCOVER_LABEL",
             )
             self.assertEqual(
                 str(regression_error.exception),
-                "Regression target must be of type float or int",
+                "Regression target must be of type float",
             )
 
         for model_cls in models_to_test:
@@ -196,11 +256,13 @@ class TestDataset(TestCase):
     def test_ScaleAGLabelledDataset_multiclass(self):
         df = load_dataframe()
         num_outputs = len(df.LANDCOVER_LABEL.unique())
-        ds = ScaleAGDataset(
+        ds = ScaleAgDataset(
             df,
-            num_outputs=num_outputs,
+            num_timesteps=12,
             task_type="multiclass",
             target_name="LANDCOVER_LABEL",
+            num_outputs=num_outputs,
+            compositing_window="monthly",
         )
 
         batch_size = 2
@@ -218,7 +280,7 @@ class TestDataset(TestCase):
         # Test that the dekad timestamp components are correctly calculated
         df = load_dataframe(timestep_freq="dekad")
         num_timesteps = 50
-        ds = ScaleAGDataset(df, num_timesteps, compositing_window="dekad")
+        ds = ScaleAgDataset(df, num_timesteps, compositing_window="dekad")
         row = ds.dataframe.iloc[0]
         row.start_date = "2018-06-15"
         row.end_date = "2019-10-25"
@@ -252,7 +314,8 @@ class TestDataset(TestCase):
 
     def test_ScaleAGDatasetTimestamps(self):
         df = load_dataframe()
-        ds = ScaleAGDataset(df)
+        num_timesteps = 12
+        ds = ScaleAgDataset(df, num_timesteps, compositing_window="monthly")
 
         # Test that the timestamps are correctly transformed
         row = ds.dataframe.iloc[0, :]
