@@ -143,7 +143,7 @@ class ScaleAgDataset(Dataset):
                     f"Ignoring provided value {num_outputs}."
                 )
             return 1
-        elif self.task_type == "multiclass":
+        else:
             if num_outputs is None:
                 logger.warning(
                     "Number of outputs for multiclass task not provided."
