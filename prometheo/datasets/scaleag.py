@@ -1,9 +1,9 @@
+import logging
 from datetime import datetime
 from typing import Any, List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
-from loguru import logger
 from torch.utils.data import Dataset
 
 from prometheo.predictors import (
@@ -138,14 +138,14 @@ class ScaleAgDataset(Dataset):
     def set_num_outputs(self, num_outputs: Optional[int]) -> Optional[int]:
         if self.task_type in ["binary", "regression"]:
             if num_outputs != 1 and num_outputs is not None:
-                logger.warning(
+                logging.warning(
                     "Number of outputs for regression and binary tasks is always set to 1."
                     f"Ignoring provided value {num_outputs}."
                 )
             return 1
         else:
             if num_outputs is None:
-                logger.warning(
+                logging.warning(
                     "Number of outputs for multiclass task not provided."
                     "Setting to the number of classes found in the dataset."
                 )
@@ -278,7 +278,7 @@ class ScaleAgDataset(Dataset):
         # it might need to be adjusted in the future
         if self.num_timesteps < len(date_vector):
             date_vector = date_vector[: self.num_timesteps]
-            logger.warning(
+            logging.warning(
                 "The number of timesteps is smaller than the number of available dates. "
                 f"Replace end date {end_date.date()} to {date_vector[-1].date()}."
             )
