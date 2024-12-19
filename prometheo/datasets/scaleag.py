@@ -139,13 +139,14 @@ class ScaleAgDataset(Dataset):
         if self.task_type in ["binary", "regression"]:
             if num_outputs != 1 and num_outputs is not None:
                 logger.warning(
-                    f"Number of outputs for regression and binary tasks is always set to 1."
+                    "Number of outputs for regression and binary tasks is always set to 1."
+                    f"Ignoring provided value {num_outputs}."
                 )
             return 1
         elif self.task_type == "multiclass":
             if num_outputs is None:
                 logger.warning(
-                    f"Number of outputs for multiclass task not provided."
+                    "Number of outputs for multiclass task not provided."
                     "Setting to the number of classes found in the dataset."
                 )
                 return len(self.dataframe[self.target_name].unique())
