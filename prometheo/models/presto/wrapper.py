@@ -222,34 +222,34 @@ class PretrainedPrestoWrapper(nn.Module):
         regressions or a classification task
         """
         super().__init__()
-        self.presto = Encoder()
+        self.encoder = Encoder()
         # make sure the model is trainable, since we can call
         # this having called requires_grad_(False)
-        self.presto.requires_grad_(True)
+        self.encoder.requires_grad_(True)
         # but don't unfreeze the month encoder, which
         # shouldn't be trainable
-        self.presto.month_embed.requires_grad_(False)
+        self.encoder.month_embed.requires_grad_(False)
 
         # update the positional encodings to handle
         # longer sequences for dekadal data
         max_sequence_length = 72  # can this be 36?
-        old_pos_embed_device = self.presto.pos_embed.device
-        self.presto.pos_embed = nn.Parameter(
+        old_pos_embed_device = self.encoder.pos_embed.device
+        self.encoder.pos_embed = nn.Parameter(
             torch.zeros(
                 1,
                 max_sequence_length,
-                self.presto.pos_embed.shape[-1],
+                self.encoder.pos_embed.shape[-1],
                 device=old_pos_embed_device,
             ),
             requires_grad=False,
         )
         pos_embed = get_sinusoid_encoding_table(
-            self.presto.pos_embed.shape[1], self.presto.pos_embed.shape[-1]
+            self.encoder.pos_embed.shape[1], self.encoder.pos_embed.shape[-1]
         )
-        self.presto.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
+        self.encoder.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
         # Same as the month encoder, the position encoder
         # shouldn't be encoder
-        self.presto.pos_embed.requires_grad_(False)
+        self.encoder.pos_embed.requires_grad_(False)
 
         head_variables = [num_outputs, regression]
         if len([x for x in head_variables if x is not None]) not in [
@@ -263,7 +263,7 @@ class PretrainedPrestoWrapper(nn.Module):
             if regression is None:
                 raise ValueError("regression cannot be None if num_outputs is not None")
             self.head = FinetuningHead(
-                hidden_size=self.presto.embedding_size,
+                hidden_size=self.encoder.embedding_size,
                 num_outputs=num_outputs,
                 regression=regression,
             )
@@ -308,7 +308,7 @@ class PretrainedPrestoWrapper(nn.Module):
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
 
-        embeddings = self.presto(
+        embeddings = self.encoder(
             x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
             dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
             latlons=to_torchtensor(x.latlon, device=device).float(),
