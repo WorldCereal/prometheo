@@ -294,11 +294,11 @@ class PretrainedPrestoWrapper(nn.Module):
     def forward(self, x: Predictors):
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
 
-        # labels should have shape [B, T or 1, outputs].
+        # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
         # they are not passed as part of the predictors.
         if x.label is not None:
-            if x.label.shape[1] == dynamic_world.shape[1]:
+            if x.label.shape[3] == dynamic_world.shape[1]:
                 eval_pooling = "time"
             else:
                 if x.label.shape[1] != 1:
@@ -319,6 +319,15 @@ class PretrainedPrestoWrapper(nn.Module):
             month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
             eval_pooling=eval_pooling,
         )
+
+        # Need to reintroduce spatial and temporal dims according to prometheo convention
+        if eval_pooling == "global":
+            embeddings = embeddings.reshape((-1, 1, 1, 1, embeddings.shape[-1]))
+        else:
+            embeddings = embeddings.reshape(
+                (-1, 1, 1, x.timestamps.shape[1], embeddings.shape[-1])
+            )
+
         if self.head is not None:
             return self.head(embeddings)
         else:
