@@ -1,34 +1,36 @@
+import io
+import warnings
+from functools import lru_cache
+from pathlib import Path
+from typing import Optional, Union
+
+import numpy as np
+import requests
+import torch
+from einops import repeat
+from torch import nn
+
+from prometheo.predictors import (
+    DEM_BANDS,
+    METEO_BANDS,
+    NODATAVALUE,
+    S1_BANDS,
+    S2_BANDS,
+    Predictors,
+    to_torchtensor,
+)
+from prometheo.utils import device
+
 from .single_file_presto import (
-    BANDS_GROUPS_IDX,
     BANDS,
-    NUM_DYNAMIC_WORLD_CLASSES,
     BANDS_ADD,
     BANDS_DIV,
+    BANDS_GROUPS_IDX,
+    NUM_DYNAMIC_WORLD_CLASSES,
     Encoder,
     FinetuningHead,
     get_sinusoid_encoding_table,
 )
-import numpy as np
-from prometheo.predictors import (
-    Predictors,
-    S1_BANDS,
-    NODATAVALUE,
-    METEO_BANDS,
-    DEM_BANDS,
-    S2_BANDS,
-    to_torchtensor,
-)
-from einops import repeat
-import warnings
-from torch import nn
-from typing import Union, Optional
-from functools import lru_cache
-import torch
-
-from prometheo.utils import device
-from pathlib import Path
-import requests
-import io
 
 default_model_path = Path(__file__).parent / "default_model.pt"
 
