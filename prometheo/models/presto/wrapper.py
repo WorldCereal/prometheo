@@ -220,6 +220,25 @@ class PretrainedPrestoWrapper(nn.Module):
     ):
         """Initialize the Presto model through a prometheo wrapper.
 
+        Parameters
+        ----------
+        num_outputs : Optional[int], optional
+            The number of output units of the model, by default None if no head
+            should be used.
+        regression : Optional[bool], optional
+            Whether the model performs regression or not, by default None.
+            Needs to be specified when num_outputs is not None.
+        eval_pooling : Literal["global", "time"], optional
+            The type of pooling used in the encoder, by default "global".
+            In case of "time", the temporal dimension will be kept in the output.
+            Note that in case labels are passed to the model, the value of this
+            setting will be ignored and inferred from label shape.
+
+        Raises
+        ------
+        ValueError
+            If both num_outputs and regression are not None or both are None.
+
         """
         super().__init__()
         self.encoder = Encoder()
