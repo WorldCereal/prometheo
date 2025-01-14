@@ -37,8 +37,8 @@ class TestPresto(unittest.TestCase):
             latlon=np.random.rand(b, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
-        model = Presto(eval_pooling="time")
-        output_embeddings = model(x)
+        model = Presto()
+        output_embeddings = model(x, eval_pooling="time")
         self.assertEqual(
             output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size)
         )
@@ -86,4 +86,24 @@ class TestPresto(unittest.TestCase):
         )
         model = Presto()
         output_embeddings = model(x)
-        self.assertEqual(output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size))
+        self.assertEqual(
+            output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size)
+        )
+
+    def test_forward_from_predictor_nopooling(self):
+        b, t, h, w = 8, 4, 1, 1
+
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
+        x = Predictors(
+            s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
+            s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
+            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            dem=np.random.rand(b, h, w, len(DEM_BANDS)),
+            latlon=np.random.rand(b, 2),
+            timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
+        )
+        model = Presto()
+        output_embeddings = model(x, eval_pooling=None)
+        self.assertEqual(
+            output_embeddings[0].shape, (b, 34, model.encoder.embedding_size)
+        )

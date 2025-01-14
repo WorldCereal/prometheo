@@ -216,7 +216,6 @@ class PretrainedPrestoWrapper(nn.Module):
         self,
         num_outputs: Optional[int] = None,
         regression: Optional[bool] = None,
-        eval_pooling: Literal["global", "time"] = "global",
     ):
         """Initialize the Presto model through a prometheo wrapper.
 
@@ -248,10 +247,6 @@ class PretrainedPrestoWrapper(nn.Module):
         # but don't unfreeze the month encoder, which
         # shouldn't be trainable
         self.encoder.month_embed.requires_grad_(False)
-
-        # Set the eval_pooling setting to be used by encoder. Will be ignored if labels
-        # are passed to the model.
-        self.eval_pooling = eval_pooling
 
         max_sequence_length = 72
         old_pos_embed_device = self.encoder.pos_embed.device
@@ -308,8 +303,27 @@ class PretrainedPrestoWrapper(nn.Module):
 
         return model
 
-    def forward(self, x: Predictors):
+    def forward(
+        self, x: Predictors, eval_pooling: Literal["global", "time", None] = "global"
+    ):
+        """
+        If x.label is not None, then we infer the output pooling from the labels (time or global).
+        If x.label is None, then we default to the eval_pooling argument passed to forward.
+
+        Encoder output pooling can be three options:
+
+        eval_pooling = "global" -> global pooling (DEFAULT)
+        eval_pooling = "time" -> time pooling, for time-explicit embeddings
+        eval_pooling = None -> no pooling (for SSL)
+
+        """
+
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
+
+        if self.head is not None and x.label is None:
+            raise ValueError(
+                "Presto wrapper has a head - labels should be a part of the predictor"
+            )
 
         # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
@@ -321,8 +335,6 @@ class PretrainedPrestoWrapper(nn.Module):
                 if x.label.shape[1] != 1:
                     raise ValueError(f"Unexpected label shape {x.label.shape}")
                 eval_pooling = "global"
-        else:
-            eval_pooling = self.eval_pooling
 
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
@@ -340,10 +352,12 @@ class PretrainedPrestoWrapper(nn.Module):
         # Need to reintroduce spatial and temporal dims according to prometheo convention
         if eval_pooling == "global":
             embeddings = embeddings.reshape((-1, 1, 1, 1, embeddings.shape[-1]))
-        else:
+        elif eval_pooling == "time":
             embeddings = embeddings.reshape(
                 (-1, 1, 1, x.timestamps.shape[1], embeddings.shape[-1])
             )
+        else:
+            pass  # In case of no pooling we assume SSL and don't change embeddings
 
         if self.head is not None:
             return self.head(embeddings)
