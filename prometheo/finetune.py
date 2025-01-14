@@ -157,7 +157,7 @@ def _setup(output_dir: Path):
     logger.info(f"Using output dir: {output_dir}")
 
 
-def run(
+def run_finetuning(
     model: torch.nn.Module,
     train_ds: Dataset,
     val_ds: Dataset,

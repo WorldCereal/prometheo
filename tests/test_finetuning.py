@@ -39,7 +39,7 @@ class TestFinetuning(TestCase):
 
         # Run finetuning
         with tempfile.TemporaryDirectory(dir=".") as output_dir:
-            finetune.run(
+            finetune.run_finetuning(
                 model,
                 train_ds,
                 val_ds,
@@ -68,7 +68,7 @@ class TestFinetuning(TestCase):
 
         # Run finetuning
         with tempfile.TemporaryDirectory(dir=".") as output_dir:
-            finetune.run(
+            finetune.run_finetuning(
                 model,
                 train_ds,
                 val_ds,
