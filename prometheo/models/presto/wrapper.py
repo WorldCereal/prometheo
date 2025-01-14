@@ -2,7 +2,7 @@ import io
 import warnings
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
 import numpy as np
 import requests
@@ -213,15 +213,13 @@ def dataset_to_model(x: Predictors):
 
 class PretrainedPrestoWrapper(nn.Module):
     def __init__(
-        self, num_outputs: Optional[int] = None, regression: Optional[bool] = None
+        self,
+        num_outputs: Optional[int] = None,
+        regression: Optional[bool] = None,
+        eval_pooling: Literal["global", "time"] = "global",
     ):
-        """
-        With the default arguments, this wrapper returns embeddings which
-        can be passed to another algorithm (e.g. a CatBoost classifier).
+        """Initialize the Presto model through a prometheo wrapper.
 
-        If `num_outputs` and `regression` is not None, a finetuning head
-        is added which will return `num_outputs` outputs either for a
-        regressions or a classification task
         """
         super().__init__()
         self.encoder = Encoder()
@@ -232,9 +230,11 @@ class PretrainedPrestoWrapper(nn.Module):
         # shouldn't be trainable
         self.encoder.month_embed.requires_grad_(False)
 
-        # update the positional encodings to handle
-        # longer sequences for dekadal data
-        max_sequence_length = 72  # can this be 36?
+        # Set the eval_pooling setting to be used by encoder. Will be ignored if labels
+        # are passed to the model.
+        self.eval_pooling = eval_pooling
+
+        max_sequence_length = 72
         old_pos_embed_device = self.encoder.pos_embed.device
         self.encoder.pos_embed = nn.Parameter(
             torch.zeros(
@@ -249,8 +249,6 @@ class PretrainedPrestoWrapper(nn.Module):
             self.encoder.pos_embed.shape[1], self.encoder.pos_embed.shape[-1]
         )
         self.encoder.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
-        # Same as the month encoder, the position encoder
-        # shouldn't be encoder
         self.encoder.pos_embed.requires_grad_(False)
 
         head_variables = [num_outputs, regression]
@@ -305,7 +303,7 @@ class PretrainedPrestoWrapper(nn.Module):
                     raise ValueError(f"Unexpected label shape {x.label.shape}")
                 eval_pooling = "global"
         else:
-            eval_pooling = "global"
+            eval_pooling = self.eval_pooling
 
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
