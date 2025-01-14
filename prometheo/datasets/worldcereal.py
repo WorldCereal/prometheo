@@ -416,7 +416,6 @@ def get_monthly_timestamp_components(
 
 
 def get_dekad_timestamp_components(start_date, end_date):
-
     timestamps = np.array(
         [_dekad_startdate_from_date(t) for t in _dekad_timestamps(start_date, end_date)]
     )

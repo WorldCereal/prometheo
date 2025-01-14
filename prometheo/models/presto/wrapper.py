@@ -289,21 +289,33 @@ class PretrainedPrestoWrapper(nn.Module):
 
         return model
 
-    def forward(self, x: Predictors):
+    def forward(self, x: Predictors, eval_pooling: Optional[str] = None):
+        """
+        If x.label is not None, then we infer the output pooling from the labels (time or global).
+        If x.label is None, then we default to the eval_pooling argument passed to forward.
+        """
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
+
+        if self.head is not None:
+            if x.label is None:
+                raise ValueError(
+                    "Presto wrapper has a head - labels should be a part of the predictor"
+                )
 
         # labels should have shape [B, T or 1, outputs].
         # need some way to communicate global vs time if
         # they are not passed as part of the predictors.
-        if x.label is not None:
-            if x.label.shape[1] == dynamic_world.shape[1]:
-                eval_pooling = "time"
+        if eval_pooling is None:
+            if x.label is not None:
+                print("Inferring eval_pooling from labels")
+                if x.label.shape[1] == dynamic_world.shape[1]:
+                    eval_pooling = "time"
+                else:
+                    if x.label.shape[1] != 1:
+                        raise ValueError(f"Unexpected label shape {x.label.shape}")
+                    eval_pooling = "global"
             else:
-                if x.label.shape[1] != 1:
-                    raise ValueError(f"Unexpected label shape {x.label.shape}")
                 eval_pooling = "global"
-        else:
-            eval_pooling = "global"
 
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
