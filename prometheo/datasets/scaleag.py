@@ -41,7 +41,6 @@ class ScaleAgDataset(Dataset):
         dataframe: pd.DataFrame,
         num_timesteps: int = 36,
         task_type: Literal["regression", "binary", "multiclass", "ssl"] = "ssl",
-        num_outputs: Optional[int] = None,
         target_name: Optional[str] = None,
         positive_labels: Optional[Union[List[Any], Any]] = None,
         compositing_window: Literal["dekad", "monthly"] = "dekad",
@@ -59,10 +58,6 @@ class ScaleAgDataset(Dataset):
             Number of timesteps to consider, by default 36.
         task_type : Literal["regression", "binary", "multiclass", "ssl"], optional
             Type of task to perform, by default self-supervised-learning "ssl".
-        num_outputs : Optional[int], optional
-            Number of output classes, by default None.
-            - for binary and regression tasks, independently on the value provided, num_outputs is enforced to be 1.
-            - for multiclass task, if this value is not provided, num_outputs is set to be the number of unique classes in the target column.
         target_name : Optional[str], optional
             Name of the target column, by default None.
         positive_labels : Optional[Union[List[Any], Any]], optional
@@ -87,9 +82,7 @@ class ScaleAgDataset(Dataset):
         self.task_type = task_type
         self.target_name = target_name
         self.positive_labels = positive_labels
-        self.num_outputs = (
-            None if task_type == "ssl" else self.set_num_outputs(num_outputs)
-        )
+        self.num_outputs = self.set_num_outputs()
         self.compositing_window = compositing_window
         self.time_explicit = time_explicit
 
@@ -135,23 +128,20 @@ class ScaleAgDataset(Dataset):
                 }
             )
 
-    def set_num_outputs(self, num_outputs: Optional[int]) -> Optional[int]:
+    def set_num_outputs(self) -> Optional[int]:
         if self.task_type in ["binary", "regression"]:
-            if num_outputs != 1 and num_outputs is not None:
-                logging.warning(
-                    "Number of outputs for regression and binary tasks is always set to 1."
-                    f"Ignoring provided value {num_outputs}."
-                )
+            logging.warning(
+                f"Setting number of outputs to 1 for {self.task_type} task."
+            )
             return 1
+        elif self.task_type == "multiclass":
+            logging.warning(
+                f"Setting to the number of classes found in the dataset for {self.task_type} task."
+            )
+            return len(self.dataframe[self.target_name].unique())
         else:
-            if num_outputs is None:
-                logging.warning(
-                    "Number of outputs for multiclass task not provided."
-                    "Setting to the number of classes found in the dataset."
-                )
-                return len(self.dataframe[self.target_name].unique())
-            else:
-                return num_outputs
+            logging.warning(f"Setting num_outputs to None for {self.task_type} task.")
+            return None
 
     def get_predictors(self, row: pd.Series) -> Predictors:
         row_d = pd.Series.to_dict(row)

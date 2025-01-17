@@ -1,8 +1,7 @@
-from pathlib import Path
 from unittest import TestCase
 
 import numpy as np
-import pandas as pd
+from resources import load_dataframe
 from torch.utils.data import DataLoader
 
 from prometheo.datasets import ScaleAgDataset
@@ -10,16 +9,6 @@ from prometheo.models import Presto
 from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
 
 models_to_test = [Presto]
-
-
-def load_dataframe(timestep_freq="month"):
-    dir = Path(__file__).resolve().parent
-    if timestep_freq == "month":
-        return pd.read_parquet(dir / "resources" / "worldcereal_dataset.parquet")
-    elif timestep_freq == "dekad":
-        return pd.read_parquet(dir / "resources" / "worldcereal_dataset_10D.parquet")
-    else:
-        raise ValueError(f"Invalid timestep frequency `{timestep_freq}`")
 
 
 class TestDataset(TestCase):
@@ -132,14 +121,12 @@ class TestDataset(TestCase):
 
     def test_ScaleAgDataset_num_outputs(self):
         df = load_dataframe()
-        num_outputs = 10
         ds = ScaleAgDataset(
             df,
             num_timesteps=12,
             task_type="binary",
             target_name="LANDCOVER_LABEL",
             positive_labels=[10, 11, 12, 13],
-            num_outputs=num_outputs,
             compositing_window="monthly",
         )
         # Check that num_output is properly set for the binary case
@@ -151,7 +138,6 @@ class TestDataset(TestCase):
             num_timesteps=12,
             task_type="regression",
             target_name="regression_label",
-            num_outputs=num_outputs,
             compositing_window="monthly",
         )
         # Check that num_output is properly set for the regression case
@@ -162,30 +148,23 @@ class TestDataset(TestCase):
             num_timesteps=12,
             task_type="multiclass",
             target_name="LANDCOVER_LABEL",
-            positive_labels=[10, 11, 12, 13],
-            num_outputs=num_outputs,
             compositing_window="monthly",
         )
         # Check that num_output is properly set for the multiclass case
-        self.assertTrue(ds.num_outputs == num_outputs)
+        self.assertTrue(ds.num_outputs == len(df.LANDCOVER_LABEL.unique()))
 
-        num_outputs = None
         ds = ScaleAgDataset(
             df,
             num_timesteps=12,
-            task_type="multiclass",
-            target_name="LANDCOVER_LABEL",
-            positive_labels=[10, 11, 12, 13],
-            num_outputs=num_outputs,
+            task_type="ssl",
             compositing_window="monthly",
         )
-        # Check that num_output is properly set for the multiclass case when num_outputs is None
-        self.assertTrue(ds.num_outputs == len(df.LANDCOVER_LABEL.unique()))
+        # Check that num_output is properly set for ssl case
+        self.assertTrue(ds.num_outputs == None)
 
     def test_ScaleAGLabelledDataset_10D(self):
         # Test dekadal version of labelled worldcereal dataset
         df = load_dataframe(timestep_freq="dekad")
-        num_outputs = 1
         num_timesteps = 36
         ds = ScaleAgDataset(
             df,
@@ -198,7 +177,7 @@ class TestDataset(TestCase):
         batch_size = 2
         dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
         batch = next(iter(dl))
-        self.check_batch(batch, batch_size, num_timesteps, num_outputs=num_outputs)
+        self.check_batch(batch, batch_size, num_timesteps, num_outputs=1)
 
         for model_cls in models_to_test:
             model = model_cls()
@@ -261,7 +240,6 @@ class TestDataset(TestCase):
             num_timesteps=12,
             task_type="multiclass",
             target_name="LANDCOVER_LABEL",
-            num_outputs=num_outputs,
             compositing_window="monthly",
         )
 

@@ -3,6 +3,7 @@ from unittest import TestCase
 
 import numpy as np
 import pandas as pd
+from resources import load_dataframe
 from torch.utils.data import DataLoader
 
 from prometheo.datasets import WorldCerealDataset, WorldCerealLabelledDataset
@@ -21,16 +22,6 @@ from prometheo.predictors import (
 )
 
 models_to_test = [Presto]
-
-
-def load_dataframe(timestep_freq="month"):
-    dir = Path(__file__).resolve().parent
-    if timestep_freq == "month":
-        return pd.read_parquet(dir / "resources" / "worldcereal_dataset.parquet")
-    elif timestep_freq == "dekad":
-        return pd.read_parquet(dir / "resources" / "worldcereal_dataset_10D.parquet")
-    else:
-        raise ValueError(f"Invalid timestep frequency `{timestep_freq}`")
 
 
 class TestDataset(TestCase):
