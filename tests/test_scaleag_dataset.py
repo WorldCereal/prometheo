@@ -160,7 +160,7 @@ class TestDataset(TestCase):
             compositing_window="monthly",
         )
         # Check that num_output is properly set for ssl case
-        self.assertTrue(ds.num_outputs == None)
+        self.assertTrue(ds.num_outputs is None)
 
     def test_ScaleAGLabelledDataset_10D(self):
         # Test dekadal version of labelled worldcereal dataset
