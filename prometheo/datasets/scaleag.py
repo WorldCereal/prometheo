@@ -130,17 +130,15 @@ class ScaleAgDataset(Dataset):
 
     def set_num_outputs(self) -> Optional[int]:
         if self.task_type in ["binary", "regression"]:
-            logging.warning(
-                f"Setting number of outputs to 1 for {self.task_type} task."
-            )
+            logging.info(f"Setting number of outputs to 1 for {self.task_type} task.")
             return 1
         elif self.task_type == "multiclass":
-            logging.warning(
+            logging.info(
                 f"Setting to the number of classes found in the dataset for {self.task_type} task."
             )
             return len(self.dataframe[self.target_name].unique())
         else:
-            logging.warning(f"Setting num_outputs to None for {self.task_type} task.")
+            logging.info(f"Setting num_outputs to None for {self.task_type} task.")
             return None
 
     def get_predictors(self, row: pd.Series) -> Predictors:
