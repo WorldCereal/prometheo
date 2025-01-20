@@ -1,34 +1,36 @@
+import io
+import warnings
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal, Optional, Union
+
+import numpy as np
+import requests
+import torch
+from einops import repeat
+from torch import nn
+
+from prometheo.predictors import (
+    DEM_BANDS,
+    METEO_BANDS,
+    NODATAVALUE,
+    S1_BANDS,
+    S2_BANDS,
+    Predictors,
+    to_torchtensor,
+)
+from prometheo.utils import device
+
 from .single_file_presto import (
-    BANDS_GROUPS_IDX,
     BANDS,
-    NUM_DYNAMIC_WORLD_CLASSES,
     BANDS_ADD,
     BANDS_DIV,
+    BANDS_GROUPS_IDX,
+    NUM_DYNAMIC_WORLD_CLASSES,
     Encoder,
     FinetuningHead,
     get_sinusoid_encoding_table,
 )
-import numpy as np
-from prometheo.predictors import (
-    Predictors,
-    S1_BANDS,
-    NODATAVALUE,
-    METEO_BANDS,
-    DEM_BANDS,
-    S2_BANDS,
-    to_torchtensor,
-)
-from einops import repeat
-import warnings
-from torch import nn
-from typing import Union, Optional
-from functools import lru_cache
-import torch
-
-from prometheo.utils import device
-from pathlib import Path
-import requests
-import io
 
 default_model_path = Path(__file__).parent / "default_model.pt"
 
@@ -211,45 +213,57 @@ def dataset_to_model(x: Predictors):
 
 class PretrainedPrestoWrapper(nn.Module):
     def __init__(
-        self, num_outputs: Optional[int] = None, regression: Optional[bool] = None
+        self,
+        num_outputs: Optional[int] = None,
+        regression: Optional[bool] = None,
     ):
-        """
-        With the default arguments, this wrapper returns embeddings which
-        can be passed to another algorithm (e.g. a CatBoost classifier).
+        """Initialize the Presto model through a prometheo wrapper.
 
-        If `num_outputs` and `regression` is not None, a finetuning head
-        is added which will return `num_outputs` outputs either for a
-        regressions or a classification task
+        Parameters
+        ----------
+        num_outputs : Optional[int], optional
+            The number of output units of the model, by default None if no head
+            should be used.
+        regression : Optional[bool], optional
+            Whether the model performs regression or not, by default None.
+            Needs to be specified when num_outputs is not None.
+        eval_pooling : Literal["global", "time"], optional
+            The type of pooling used in the encoder, by default "global".
+            In case of "time", the temporal dimension will be kept in the output.
+            Note that in case labels are passed to the model, the value of this
+            setting will be ignored and inferred from label shape.
+
+        Raises
+        ------
+        ValueError
+            If both num_outputs and regression are not None or both are None.
+
         """
         super().__init__()
-        self.presto = Encoder()
+        self.encoder = Encoder()
         # make sure the model is trainable, since we can call
         # this having called requires_grad_(False)
-        self.presto.requires_grad_(True)
+        self.encoder.requires_grad_(True)
         # but don't unfreeze the month encoder, which
         # shouldn't be trainable
-        self.presto.month_embed.requires_grad_(False)
+        self.encoder.month_embed.requires_grad_(False)
 
-        # update the positional encodings to handle
-        # longer sequences for dekadal data
-        max_sequence_length = 72  # can this be 36?
-        old_pos_embed_device = self.presto.pos_embed.device
-        self.presto.pos_embed = nn.Parameter(
+        max_sequence_length = 72
+        old_pos_embed_device = self.encoder.pos_embed.device
+        self.encoder.pos_embed = nn.Parameter(
             torch.zeros(
                 1,
                 max_sequence_length,
-                self.presto.pos_embed.shape[-1],
+                self.encoder.pos_embed.shape[-1],
                 device=old_pos_embed_device,
             ),
             requires_grad=False,
         )
         pos_embed = get_sinusoid_encoding_table(
-            self.presto.pos_embed.shape[1], self.presto.pos_embed.shape[-1]
+            self.encoder.pos_embed.shape[1], self.encoder.pos_embed.shape[-1]
         )
-        self.presto.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
-        # Same as the month encoder, the position encoder
-        # shouldn't be encoder
-        self.presto.pos_embed.requires_grad_(False)
+        self.encoder.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
+        self.encoder.pos_embed.requires_grad_(False)
 
         head_variables = [num_outputs, regression]
         if len([x for x in head_variables if x is not None]) not in [
@@ -263,7 +277,7 @@ class PretrainedPrestoWrapper(nn.Module):
             if regression is None:
                 raise ValueError("regression cannot be None if num_outputs is not None")
             self.head = FinetuningHead(
-                hidden_size=self.presto.embedding_size,
+                hidden_size=self.encoder.embedding_size,
                 num_outputs=num_outputs,
                 regression=regression,
             )
@@ -289,26 +303,43 @@ class PretrainedPrestoWrapper(nn.Module):
 
         return model
 
-    def forward(self, x: Predictors):
+    def forward(
+        self, x: Predictors, eval_pooling: Literal["global", "time", None] = "global"
+    ):
+        """
+        If x.label is not None, then we infer the output pooling from the labels (time or global).
+        If x.label is None, then we default to the eval_pooling argument passed to forward.
+
+        Encoder output pooling can be three options:
+
+        eval_pooling = "global" -> global pooling (DEFAULT)
+        eval_pooling = "time" -> time pooling, for time-explicit embeddings
+        eval_pooling = None -> no pooling (for SSL)
+
+        """
+
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
 
-        # labels should have shape [B, T or 1, outputs].
+        if self.head is not None and x.label is None:
+            raise ValueError(
+                "Presto wrapper has a head - labels should be a part of the predictor"
+            )
+
+        # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
         # they are not passed as part of the predictors.
         if x.label is not None:
-            if x.label.shape[1] == dynamic_world.shape[1]:
+            if x.label.shape[3] == dynamic_world.shape[1]:
                 eval_pooling = "time"
             else:
                 if x.label.shape[1] != 1:
                     raise ValueError(f"Unexpected label shape {x.label.shape}")
                 eval_pooling = "global"
-        else:
-            eval_pooling = "global"
 
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
 
-        embeddings = self.presto(
+        embeddings = self.encoder(
             x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
             dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
             latlons=to_torchtensor(x.latlon, device=device).float(),
@@ -317,6 +348,17 @@ class PretrainedPrestoWrapper(nn.Module):
             month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
             eval_pooling=eval_pooling,
         )
+
+        # Need to reintroduce spatial and temporal dims according to prometheo convention
+        if eval_pooling == "global":
+            embeddings = embeddings.reshape((-1, 1, 1, 1, embeddings.shape[-1]))
+        elif eval_pooling == "time":
+            embeddings = embeddings.reshape(
+                (-1, 1, 1, x.timestamps.shape[1], embeddings.shape[-1])
+            )
+        else:
+            pass  # In case of no pooling we assume SSL and don't change embeddings
+
         if self.head is not None:
             return self.head(embeddings)
         else:
