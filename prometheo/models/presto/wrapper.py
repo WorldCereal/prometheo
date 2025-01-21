@@ -295,9 +295,9 @@ class PretrainedPrestoWrapper(nn.Module):
             presto_model_layers = torch.load(
                 io.BytesIO(response.content), map_location=device
             )
-            model.presto.load_state_dict(presto_model_layers, strict=strict)
+            model.encoder.load_state_dict(presto_model_layers, strict=strict)
         else:
-            model.presto.load_state_dict(
+            model.encoder.load_state_dict(
                 torch.load(model_path, map_location=device), strict=strict
             )
 
