@@ -27,8 +27,8 @@ from .single_file_presto import (
     BANDS_DIV,
     BANDS_GROUPS_IDX,
     NUM_DYNAMIC_WORLD_CLASSES,
-    Encoder,
     FinetuningHead,
+    Presto,
     get_sinusoid_encoding_table,
 )
 
@@ -211,11 +211,55 @@ def dataset_to_model(x: Predictors):
     return output, mask, dynamic_world
 
 
+@lru_cache(maxsize=6)
+def load_pretrained(
+    model: Presto,
+    model_path: Union[str, Path] = default_model_path,
+    strict: bool = True,
+):
+    """Load pretrained weights into a Presto model.
+
+    Parameters
+    ----------
+    model : Presto
+        The Presto model to load the pretrained weights into.
+    model_path : Union[str, Path], optional
+        The path to the pretrained weights file. If not provided, the default model path will be used.
+    strict : bool, optional
+        Whether to strictly enforce that the keys in the pretrained weights match the keys in the model.
+        If True, an error will be raised if there are any missing or unexpected keys. If False, missing or
+        unexpected keys will be ignored. Default is True.
+
+    Returns
+    -------
+    Presto
+        The Presto model with the pretrained weights loaded.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the specified model path does not exist.
+    """
+    if isinstance(model_path, str) and (model_path.startswith("http")):
+        response = requests.get(model_path)
+        presto_model_layers = torch.load(
+            io.BytesIO(response.content), map_location=device
+        )
+        model.load_state_dict(presto_model_layers, strict=strict)
+    else:
+        model.load_state_dict(
+            torch.load(model_path, map_location=device), strict=strict
+        )
+
+    return model
+
+
 class PretrainedPrestoWrapper(nn.Module):
     def __init__(
         self,
         num_outputs: Optional[int] = None,
         regression: Optional[bool] = None,
+        pretrained_model_path: Optional[Union[str, Path]] = None,
     ):
         """Initialize the Presto model through a prometheo wrapper.
 
@@ -227,11 +271,8 @@ class PretrainedPrestoWrapper(nn.Module):
         regression : Optional[bool], optional
             Whether the model performs regression or not, by default None.
             Needs to be specified when num_outputs is not None.
-        eval_pooling : Literal["global", "time"], optional
-            The type of pooling used in the encoder, by default "global".
-            In case of "time", the temporal dimension will be kept in the output.
-            Note that in case labels are passed to the model, the value of this
-            setting will be ignored and inferred from label shape.
+        pretrained_model_path : Union[str, Path], optional
+            The path to the pretrained model, by default None.
 
         Raises
         ------
@@ -240,7 +281,17 @@ class PretrainedPrestoWrapper(nn.Module):
 
         """
         super().__init__()
-        self.encoder = Encoder()
+
+        # Construct original Presto model with the default configuration
+        presto = Presto.construct()
+
+        # Load pretrained model before making any adaptations
+        if pretrained_model_path is not None:
+            presto = load_pretrained(presto, pretrained_model_path, strict=False)
+
+        # Extract the encoder from the original Presto model
+        self.encoder = presto.encoder
+
         # make sure the model is trainable, since we can call
         # this having called requires_grad_(False)
         self.encoder.requires_grad_(True)
@@ -281,27 +332,6 @@ class PretrainedPrestoWrapper(nn.Module):
                 num_outputs=num_outputs,
                 regression=regression,
             )
-
-    @classmethod
-    @lru_cache(maxsize=6)
-    def load_pretrained(
-        cls,
-        model_path: Union[str, Path] = default_model_path,
-        strict: bool = True,
-    ):
-        model = cls()
-        if isinstance(model_path, str) and (model_path.startswith("http")):
-            response = requests.get(model_path)
-            presto_model_layers = torch.load(
-                io.BytesIO(response.content), map_location=device
-            )
-            model.encoder.load_state_dict(presto_model_layers, strict=strict)
-        else:
-            model.encoder.load_state_dict(
-                torch.load(model_path, map_location=device), strict=strict
-            )
-
-        return model
 
     def forward(
         self, x: Predictors, eval_pooling: Literal["global", "time", None] = "global"
