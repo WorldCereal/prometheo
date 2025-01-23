@@ -74,7 +74,7 @@ def _train_loop(
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
             preds = model(batch)
-            loss = loss_fn(preds, batch.label.float())
+            loss = loss_fn(preds, batch.label.to(device).float())
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -88,7 +88,7 @@ def _train_loop(
             with torch.no_grad():
                 preds = model(batch)
                 all_preds.append(preds)
-                all_y.append(batch.label.float())
+                all_y.append(batch.label.to(device).float())
 
         val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
 
@@ -206,9 +206,9 @@ def run_finetuning(
     seed_everything(seed)
 
     # Set up optimizer and scheduler
-    assert (optimizer is None) == (
-        scheduler is None
-    ), "`optimizer` and `scheduler` must either both be None or both not None."
+    assert (optimizer is None) == (scheduler is None), (
+        "`optimizer` and `scheduler` must either both be None or both not None."
+    )
     if optimizer is None:
         optimizer = AdamW(model.parameters(), lr=hyperparams.lr)
         scheduler = lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
