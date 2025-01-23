@@ -9,6 +9,7 @@ from torch.optim import AdamW, lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
+from prometheo.predictors import NODATAVALUE
 from prometheo.utils import (  # config_dir,; data_dir,; default_model_path,
     DEFAULT_SEED,
     device,
@@ -74,7 +75,10 @@ def _train_loop(
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
             preds = model(batch)
-            loss = loss_fn(preds, batch.label.to(device).float())
+            targets = batch.label.to(device).float()
+            loss = loss_fn(
+                preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
+            )
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -87,8 +91,11 @@ def _train_loop(
         for batch in val_dl:
             with torch.no_grad():
                 preds = model(batch)
+                targets = batch.label.to(device).float()
+                preds = preds[targets != NODATAVALUE]
+                targets = targets[targets != NODATAVALUE]
                 all_preds.append(preds)
-                all_y.append(batch.label.to(device).float())
+                all_y.append(targets)
 
         val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
 
