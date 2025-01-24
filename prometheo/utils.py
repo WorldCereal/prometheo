@@ -1,10 +1,9 @@
-import logging
-import os
 import sys
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import torch
+from loguru import logger
 
 DEFAULT_SEED: int = 42
 
@@ -34,25 +33,30 @@ def seed_everything(seed: int = DEFAULT_SEED):
 
 
 def initialize_logging(
-    output_dir: Union[str, Path], to_file=True, logger_name="__main__"
+    log_file: Optional[Union[str, Path]] = None,
+    level="INFO",
+    console_filter_keyword: Optional[str] = None,
 ):
-    logger = logging.getLogger(logger_name)
-    formatter = logging.Formatter(
-        fmt="%(asctime)s - %(levelname)s - %(message)s",
-        datefmt="%d-%m-%Y %H:%M:%S",
+    # Remove the default console handler if necessary
+    logger.remove()
+
+    # Re-add console handler with optional filtering
+    if console_filter_keyword:
+        logger.add(
+            sys.stdout,
+            level=level,
+            filter=lambda record: console_filter_keyword not in record["message"]
+            if console_filter_keyword
+            else None,
+        )
+
+    # File handler
+    if log_file:
+        log_dir = Path(log_file).parent
+        log_dir.mkdir(parents=True, exist_ok=True)
+        logger.add(log_file, level=level)
+
+    logger.info(
+        "Logging setup complete. Logging to: {} and console.",
+        log_file or "console only",
     )
-    ch = logging.StreamHandler(stream=sys.stdout)
-    ch.setLevel(logging.INFO)
-    ch.setFormatter(formatter)
-    logger.addHandler(ch)
-
-    logger.setLevel(logging.INFO)
-
-    if to_file:
-        path = os.path.join(output_dir, "console-output.log")
-        fh = logging.FileHandler(path)
-        fh.setLevel(logging.INFO)
-        fh.setFormatter(formatter)
-        logger.addHandler(fh)
-        logger.info("Initialized logging to %s" % path)
-    return logger
