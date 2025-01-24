@@ -1,6 +1,7 @@
 __pycache__
 # data needs to be explicitly added
 data/*
+build/*
 .ipynb_checkpoints
 baseline_weights
 slurm
