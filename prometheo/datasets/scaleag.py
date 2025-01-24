@@ -1,9 +1,9 @@
-import logging
 from datetime import datetime
 from typing import Any, List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 from torch.utils.data import Dataset
 
 from prometheo.predictors import (
@@ -130,15 +130,15 @@ class ScaleAgDataset(Dataset):
 
     def set_num_outputs(self) -> Optional[int]:
         if self.task_type in ["binary", "regression"]:
-            logging.info(f"Setting number of outputs to 1 for {self.task_type} task.")
+            logger.info(f"Setting number of outputs to 1 for {self.task_type} task.")
             return 1
         elif self.task_type == "multiclass":
-            logging.info(
+            logger.info(
                 f"Setting to the number of classes found in the dataset for {self.task_type} task."
             )
             return len(self.dataframe[self.target_name].unique())
         else:
-            logging.info(f"Setting num_outputs to None for {self.task_type} task.")
+            logger.info(f"Setting num_outputs to None for {self.task_type} task.")
             return None
 
     def get_predictors(self, row: pd.Series) -> Predictors:
@@ -266,7 +266,7 @@ class ScaleAgDataset(Dataset):
         # it might need to be adjusted in the future
         if self.num_timesteps < len(date_vector):
             date_vector = date_vector[: self.num_timesteps]
-            logging.warning(
+            logger.warning(
                 "The number of timesteps is smaller than the number of available dates. "
                 f"Replace end date {end_date.date()} to {date_vector[-1].date()}."
             )
@@ -303,7 +303,9 @@ class ScaleAgDataset(Dataset):
             assert target in [
                 0,
                 1,
-            ], f"Invalid target value: {target}. Target must be either 0 or 1. Please provide pos_labels list."
+            ], (
+                f"Invalid target value: {target}. Target must be either 0 or 1. Please provide pos_labels list."
+            )
 
         # convert classes to indices for multiclass
         elif self.task_type == "multiclass":

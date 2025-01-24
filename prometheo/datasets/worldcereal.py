@@ -1,4 +1,3 @@
-import logging
 from datetime import datetime
 from typing import Dict, List, Literal, Optional, Tuple
 
@@ -14,8 +13,6 @@ from prometheo.predictors import (
     S2_BANDS,
     Predictors,
 )
-
-logger = logging.getLogger("__main__")
 
 
 class WorldCerealDataset(Dataset):
@@ -115,9 +112,9 @@ class WorldCerealDataset(Dataset):
             )
 
         # Sanity check to make sure valid_position is still within the extracted timesteps
-        assert (
-            valid_position in timestep_positions
-        ), f"Valid position {valid_position} not in timestep positions {timestep_positions}"
+        assert valid_position in timestep_positions, (
+            f"Valid position {valid_position} not in timestep positions {timestep_positions}"
+        )
 
         return timestep_positions, valid_position
 
@@ -416,7 +413,6 @@ def get_monthly_timestamp_components(
 
 
 def get_dekad_timestamp_components(start_date, end_date):
-
     timestamps = np.array(
         [_dekad_startdate_from_date(t) for t in _dekad_timestamps(start_date, end_date)]
     )

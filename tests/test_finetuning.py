@@ -3,6 +3,7 @@ from pathlib import Path
 from unittest import TestCase
 
 import pandas as pd
+from loguru import logger
 from torch.nn import BCEWithLogitsLoss
 from torch.optim import AdamW, lr_scheduler
 
@@ -24,7 +25,6 @@ def load_dataframe(timestep_freq="month"):
 
 
 class TestFinetuning(TestCase):
-
     def test_WorldCerealFinetuneCropNoCrop(self):
         """Minimal finetuning test as much as possible making use of defaults"""
         df = load_dataframe()
@@ -48,7 +48,9 @@ class TestFinetuning(TestCase):
                 loss_fn=BCEWithLogitsLoss(),
                 hyperparams=hyperparams,
             )
-            pass
+
+            # Explicitly remove handlers to avoid errors with autodelete of temp folder
+            logger.remove()
 
     def test_WorldCerealFinetuneCropNoCrop_TimeExplicit(self):
         """More advanced finetuning test with custom optimizer and scheduler
@@ -79,3 +81,6 @@ class TestFinetuning(TestCase):
                 scheduler=scheduler,
                 hyperparams=hyperparams,
             )
+
+            # Explicitly remove handlers to avoid errors with autodelete of temp folder
+            logger.remove()
