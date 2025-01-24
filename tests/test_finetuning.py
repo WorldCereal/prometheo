@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest import TestCase
 
 import pandas as pd
-from torch.nn import BCELoss
+from torch.nn import BCEWithLogitsLoss
 from torch.optim import AdamW, lr_scheduler
 
 from prometheo import finetune
@@ -44,7 +44,7 @@ class TestFinetuning(TestCase):
                 val_ds,
                 experiment_name="test",
                 output_dir=output_dir,
-                loss_fn=BCELoss(),
+                loss_fn=BCEWithLogitsLoss(),
                 hyperparams=hyperparams,
             )
             pass
@@ -73,7 +73,7 @@ class TestFinetuning(TestCase):
                 val_ds,
                 experiment_name="test_advanced",
                 output_dir=output_dir,
-                loss_fn=BCELoss(),
+                loss_fn=BCEWithLogitsLoss(),
                 optimizer=optimizer,
                 scheduler=scheduler,
                 hyperparams=hyperparams,

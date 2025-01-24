@@ -848,8 +848,6 @@ class FinetuningHead(nn.Module):
 
     def forward(self, x: torch.Tensor):
         x = self.linear(x)
-        if (not self.regression) & (self.num_outputs == 1):
-            x = torch.sigmoid(x)
         return x
 
 

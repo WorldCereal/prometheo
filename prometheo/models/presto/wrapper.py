@@ -346,6 +346,8 @@ class PretrainedPrestoWrapper(nn.Module):
         eval_pooling = "time" -> time pooling, for time-explicit embeddings
         eval_pooling = None -> no pooling (for SSL)
 
+        Note: in case a finetuning head is part of Presto, it does not include activation.
+
         """
 
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
