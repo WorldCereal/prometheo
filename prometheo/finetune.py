@@ -135,13 +135,15 @@ def _train_loop(
     return model
 
 
-def _setup(output_dir: Path, setup_logging: bool):
+def _setup(output_dir: Path, experiment_name: Union[str, Path], setup_logging: bool):
     """Set up the output directory and logging for the fine-tuning process.
 
     Parameters
     ----------
     output_dir : Path
         The path to the output directory where the fine-tuned model and logs will be saved.
+    experiment_name : Union[str, Path]
+        The name of the experiment to use as name for the log file
     setup_logging : bool
         Whether to set up logging for the fine-tuning process. Disable if logging has already been
         setup elsewhere.
@@ -163,10 +165,10 @@ def _setup(output_dir: Path, setup_logging: bool):
 
     if setup_logging:
         initialize_logging(
-            log_file=model_logging_dir / "training.log",
+            log_file=model_logging_dir / f"{experiment_name}.log",
             console_filter_keyword="PROGRESS",
         )
-    logger.info(f"Using output dir: {output_dir}")
+    logger.info(f"Using output dir: {output_dir.resolve()}")
 
 
 def run_finetuning(
@@ -230,7 +232,7 @@ def run_finetuning(
 
     # Setup directories and initialize logging
     output_dir = Path(output_dir)
-    _setup(output_dir, setup_logging)
+    _setup(output_dir, experiment_name, setup_logging)
 
     # Set model path
     finetuned_model_path = output_dir / f"{experiment_name}.pt"

@@ -40,21 +40,29 @@ def initialize_logging(
     # Remove the default console handler if necessary
     logger.remove()
 
+    # Custom format
+    custom_format = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+        "<level>{level: <8}</level> | "
+        "<cyan>{name}</cyan> - "
+        "<level>{message}</level>"
+    )
+
     # Re-add console handler with optional filtering
-    if console_filter_keyword:
-        logger.add(
-            sys.stdout,
-            level=level,
-            filter=lambda record: console_filter_keyword not in record["message"]
-            if console_filter_keyword
-            else None,
-        )
+    logger.add(
+        sys.stdout,
+        level=level,
+        format=custom_format,
+        filter=lambda record: console_filter_keyword not in record["message"]
+        if console_filter_keyword
+        else None,
+    )
 
     # File handler
     if log_file:
         log_dir = Path(log_file).parent
         log_dir.mkdir(parents=True, exist_ok=True)
-        logger.add(log_file, level=level)
+        logger.add(log_file, level=level, format=custom_format)
 
     logger.info(
         "Logging setup complete. Logging to: {} and console.",
