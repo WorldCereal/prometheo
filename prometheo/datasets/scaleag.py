@@ -251,25 +251,13 @@ class ScaleAgDataset(Dataset):
     def get_date_array(self, row):
         # set correct initial and end dates
         start_date = pd.to_datetime(row.start_date)
-        end_date = pd.to_datetime(row.end_date)
         start_date = self._get_correct_date(start_date)
-        end_date = self._get_correct_date(end_date)
 
         # generate date vector based on compositing window
         date_vector = [start_date]
-        while start_date != end_date:
+        while len(date_vector) < self.num_timesteps:
             start_date = self._get_following_date(start_date)
             date_vector.append(start_date)
-
-        # truncate date vector on the end side if it exceeds the number of timesteps
-        # this strategy currently does not give the freedom to chose which timestamps to keep
-        # it might need to be adjusted in the future
-        if self.num_timesteps < len(date_vector):
-            date_vector = date_vector[: self.num_timesteps]
-            logger.warning(
-                "The number of timesteps is smaller than the number of available dates. "
-                f"Replace end date {end_date.date()} to {date_vector[-1].date()}."
-            )
 
         return np.stack(
             [
@@ -303,9 +291,7 @@ class ScaleAgDataset(Dataset):
             assert target in [
                 0,
                 1,
-            ], (
-                f"Invalid target value: {target}. Target must be either 0 or 1. Please provide pos_labels list."
-            )
+            ], f"Invalid target value: {target}. Target must be either 0 or 1. Please provide pos_labels list."
 
         # convert classes to indices for multiclass
         elif self.task_type == "multiclass":
