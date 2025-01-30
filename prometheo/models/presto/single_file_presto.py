@@ -10,6 +10,8 @@ from torch import nn
 from torch.jit import Final
 from torch.nn import functional as F
 
+from prometheo.utils import device
+
 BANDS = [
     "VV",
     "VH",
@@ -85,6 +87,20 @@ BANDS_GROUPS_IDX = OrderedDict(
 )
 
 NUM_DYNAMIC_WORLD_CLASSES = 9
+
+
+class LossWrapper(nn.Module):
+    def __init__(self, loss: nn.Module):
+        super().__init__()
+        self.loss = loss
+
+    def forward(self, pred: torch.Tensor, true: torch.Tensor) -> torch.Tensor:
+        assert len(pred) == len(true)
+        if len(pred) == 0:
+            # len(pred) == 0 -> no inputs are masked, so no
+            # inputs are passed to the loss
+            return torch.tensor(0).float().to(device)
+        return self.loss(pred, true)
 
 
 class Attention(nn.Module):
