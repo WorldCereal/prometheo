@@ -52,3 +52,39 @@ class TestSSL(TestCase):
 
             # Explicitly remove handlers to avoid errors with autodelete of temp folder
             logger.remove()
+
+    def test_WorldCerealPrestoSSL_10D(self):
+        """Minimal SSL test for Presto, now on 10-day dataset"""
+        df = load_dataframe(timestep_freq="dekad")
+        num_timesteps = 36
+        train_ds = WorldCerealDataset(
+            df, timestep_freq="dekad", num_timesteps=num_timesteps
+        )
+        val_ds = WorldCerealDataset(
+            df, timestep_freq="dekad", num_timesteps=num_timesteps
+        )
+
+        # Set mask parameters
+        mask_params = MaskParamsNoDw(
+            strategies=MASK_STRATEGIES, ratio=0.75, num_timesteps=num_timesteps
+        )
+
+        # Construct the model with finetuning head
+        model = SSLPresto(mask_params=mask_params)
+
+        # Reduce epochs for testing purposes
+        hyperparams = ssl.Hyperparams(nr_epochs=1, batch_size=2, num_workers=2)
+
+        # Run SSL
+        with tempfile.TemporaryDirectory(dir=".") as output_dir:
+            ssl.run_ssl(
+                model,
+                train_ds,
+                val_ds,
+                experiment_name="test",
+                output_dir=output_dir,
+                hyperparams=hyperparams,
+            )
+
+            # Explicitly remove handlers to avoid errors with autodelete of temp folder
+            logger.remove()
