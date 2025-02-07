@@ -196,12 +196,10 @@ class ScaleAgDataset(Dataset):
         """
         Determine the correct date based on the input date and compositing window.
         """
-        dt_in = np.datetime64(dt_in, "D")  # Ensure day-level precision
-
         # Extract year, month, and day
-        year = dt_in.astype("object").year
-        month = dt_in.astype("object").month
-        day = dt_in.astype("object").day
+        year = np.datetime64(dt_in, "D").astype("object").year
+        month = np.datetime64(dt_in, "D").astype("object").month
+        day = np.datetime64(dt_in, "D").astype("object").day
 
         if self.compositing_window == "dekad":
             if day <= 10:
@@ -228,12 +226,10 @@ class ScaleAgDataset(Dataset):
         while len(days) < self.num_timesteps:
             if day < 21:
                 day += 10
-                # date_vector.append(np.datetime64(f"{year}-{month:02d}-{day}"))
             else:
                 month = month + 1 if month < 12 else 1
                 year = year + 1 if month == 1 else year
                 day = 1
-                # date_vector.append(np.datetime64(f"{year}-{month:02d}-01"))
             days.append(day)
             months.append(month)
             years.append(year)
