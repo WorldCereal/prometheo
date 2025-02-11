@@ -1,4 +1,3 @@
-from datetime import datetime
 from typing import Any, List, Literal, Optional, Union
 
 import numpy as np
@@ -278,7 +277,7 @@ class ScaleAgDataset(Dataset):
         labels = np.full(
             (1, 1, time_dim, self.num_outputs),
             fill_value=NODATAVALUE,
-            dtype=np.int32,
+            dtype=np.float32,  ####
         )
         if self.task_type == "regression":
             target = self.normalize_target(target)
