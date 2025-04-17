@@ -9,13 +9,9 @@ from torch.optim import AdamW, lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from prometheo.predictors import NODATAVALUE
+from prometheo.predictors import NODATAVALUE, Predictors
 from prometheo.utils import (  # config_dir,; data_dir,; default_model_path,
-    DEFAULT_SEED,
-    device,
-    initialize_logging,
-    seed_everything,
-)
+    DEFAULT_SEED, device, initialize_logging, seed_everything)
 
 
 @dataclass
@@ -25,6 +21,7 @@ class Hyperparams:
     batch_size: int = 256
     patience: int = 20
     num_workers: int = 8
+
 
 
 def _train_loop(
@@ -72,11 +69,26 @@ def _train_loop(
 
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
+
+            batch = batch.move_predictors_to_device(device)
+            assert isinstance(batch, Predictors)
+
             preds = model(batch)
+            if not isinstance(batch.label, torch.Tensor):
+                raise ValueError("Predictors.label must be a torch.Tensor during training")
             targets = batch.label.to(device).float()
+            # targets = batch.label.view(-1).long().to(device).float()
+
+            # assert preds.shape == targets.shape
+            # print(targets.shape)
+
+            # loss = loss_fn(
+            #     preds[targets != NODATAVALUE].squeeze(-1), targets[targets != NODATAVALUE].float()
+            # )
             loss = loss_fn(
                 preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
             )
+
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -88,7 +100,13 @@ def _train_loop(
 
         for batch in val_dl:
             with torch.no_grad():
+                batch = batch.move_predictors_to_device(device)
+                assert isinstance(batch, Predictors)
                 preds = model(batch)
+        
+                if not isinstance(batch.label, torch.Tensor):
+                    raise ValueError("Predictors.label must be a torch.Tensor during training")
+
                 targets = batch.label.to(device).float()
                 preds = preds[targets != NODATAVALUE]
                 targets = targets[targets != NODATAVALUE]
@@ -263,6 +281,7 @@ def run_finetuning(
         num_workers=hyperparams.num_workers,
     )
 
+    assert scheduler is not None
     # Run the finetuning loop
     finetuned_model = _train_loop(
         model, train_dl, val_dl, hyperparams, loss_fn, optimizer, scheduler
