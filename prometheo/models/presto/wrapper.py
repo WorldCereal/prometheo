@@ -2,7 +2,7 @@ import io
 import warnings
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Literal, Optional, Tuple, Union
 
 import numpy as np
 import requests
@@ -10,27 +10,13 @@ import torch
 from einops import repeat
 from torch import nn
 
-from prometheo.predictors import (
-    DEM_BANDS,
-    METEO_BANDS,
-    NODATAVALUE,
-    S1_BANDS,
-    S2_BANDS,
-    Predictors,
-    to_torchtensor,
-)
+from prometheo.predictors import (DEM_BANDS, METEO_BANDS, NODATAVALUE,
+                                  S1_BANDS, S2_BANDS, Predictors)
 from prometheo.utils import device
 
-from .single_file_presto import (
-    BANDS,
-    BANDS_ADD,
-    BANDS_DIV,
-    BANDS_GROUPS_IDX,
-    NUM_DYNAMIC_WORLD_CLASSES,
-    FinetuningHead,
-    Presto,
-    get_sinusoid_encoding_table,
-)
+from .single_file_presto import (BANDS, BANDS_ADD, BANDS_DIV, BANDS_GROUPS_IDX,
+                                 NUM_DYNAMIC_WORLD_CLASSES, FinetuningHead,
+                                 Presto, get_sinusoid_encoding_table)
 
 default_model_path = Path(__file__).parent / "default_model.pt"
 
@@ -128,11 +114,10 @@ def calculate_ndvi(input_array):
     return x, mask
 
 
-def normalize(x: np.ndarray, mask: np.ndarray):
-    if isinstance(x, np.ndarray):
-        x = ((x + BANDS_ADD) / BANDS_DIV).astype(np.float32)
-    else:
-        x = (x + torch.tensor(BANDS_ADD)) / torch.tensor(BANDS_DIV)
+def normalize(x: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    BANDS_ADD_T = torch.tensor(BANDS_ADD, device=x.device)
+    BANDS_DIV_T = torch.tensor(BANDS_DIV, device=x.device)
+    x = (x + BANDS_ADD_T) / BANDS_DIV_T
 
     ndvi, ndvi_mask = calculate_ndvi(x)
 
@@ -148,34 +133,41 @@ def normalize(x: np.ndarray, mask: np.ndarray):
 
 def dataset_to_model(x: Predictors):
     batch_sizes = [v.shape[0] for v in [x.s1, x.s2, x.meteo, x.dem] if v is not None]
-    timesteps = [v.shape[-2] for v in [x.s1, x.s2, x.meteo] if v is not None]
-    if len(timesteps) == 0:
+    timesteps_list = [v.shape[-2] for v in [x.s1, x.s2, x.meteo] if v is not None]
+
+    # Ensure there's at least one time input
+    if not timesteps_list:
         raise ValueError("One of s1, s2, meteo must be not None")
-    if not all(v == batch_sizes[0] for v in batch_sizes):
-        raise ValueError("dim 0 (batch size) must be consistent for s1, s2, dem, meteo")
-    if not all(v == timesteps[0] for v in timesteps):
-        raise ValueError("dim -2 (timesteps) must be consistent for s1, s2, meteo")
 
-    batch_size, timesteps = batch_sizes[0], timesteps[0]
-    total_bands = sum([len(v) for _, v in BANDS_GROUPS_IDX.items()])
+    # Ensure all batch sizes match
+    if not all(bs == batch_sizes[0] for bs in batch_sizes):
+        raise ValueError(f"Inconsistent batch sizes: {batch_sizes}")
 
-    mask, output = (
-        np.ones((batch_size, timesteps, total_bands)),
-        np.zeros((batch_size, timesteps, total_bands)),
-    )
+    # Ensure all timesteps match
+    if not all(ts == timesteps_list[0] for ts in timesteps_list):
+        raise ValueError(f"Inconsistent timesteps: {timesteps_list}")
+
+    # Unpack single values now that checks passed
+    batch_size: int = batch_sizes[0]
+    timesteps: int = timesteps_list[0]
+    total_bands = sum([len(v) for _, v in BANDS_GROUPS_IDX.items()])    
+
+    output = torch.zeros((batch_size, timesteps, total_bands), device=device)
+    mask = torch.ones((batch_size, timesteps, total_bands), device=device)
 
     if x.s1 is not None:
         h, w = x.s1.shape[1], x.s1.shape[2]
         if (h != 1) or (w != 1):
             raise ValueError("Presto does not support h, w > 1")
-        # for some reason, doing
+        #  for some reason, doing
         # x.s1[ :, 0, 0, :, mapper["S1"]["predictor"]]
         # directly yields an array of shape [bands, batch_size, timesteps]
         # but splitting it like this doesn't. I am not sure why
         s1_hw = x.s1[:, 0, 0, :, :]
         s1_hw_bands = s1_hw[:, :, mapper["S1"]["predictor"]]
+        assert isinstance(s1_hw_bands, torch.Tensor)
         output[:, :, mapper["S1"]["presto"]] = s1_hw_bands
-        mask[:, :, mapper["S1"]["presto"]] = s1_hw_bands == NODATAVALUE
+        mask[:, :, mapper["S1"]["presto"]] = (s1_hw_bands == NODATAVALUE).float()
 
     if x.s2 is not None:
         h, w = x.s2.shape[1], x.s2.shape[2]
@@ -184,28 +176,36 @@ def dataset_to_model(x: Predictors):
 
         s2_hw = x.s2[:, 0, 0, :, :]
         s2_hw_bands = s2_hw[:, :, mapper["S2"]["predictor"]]
+        assert isinstance(s2_hw_bands, torch.Tensor)
         output[:, :, mapper["S2"]["presto"]] = s2_hw_bands
-        mask[:, :, mapper["S2"]["presto"]] = s2_hw_bands == NODATAVALUE
+        mask[:, :, mapper["S2"]["presto"]] = (s2_hw_bands == NODATAVALUE).float()
 
     if x.meteo is not None:
-        output[:, :, mapper["meteo"]["presto"]] = x.meteo[
-            :, :, mapper["meteo"]["predictor"]
-        ]
+        meteo = x.meteo[:, :, mapper["meteo"]["predictor"]]
+        assert isinstance(meteo, torch.Tensor)
+        output[:, :, mapper["meteo"]["presto"]] = meteo
         mask[:, :, mapper["meteo"]["presto"]] = (
             x.meteo[:, :, mapper["meteo"]["predictor"]] == NODATAVALUE
-        )
+        ).float()
 
     if x.dem is not None:
         h, w = x.dem.shape[1], x.dem.shape[2]
         if (h != 1) or (w != 1):
             raise ValueError("Presto does not support h, w > 1")
+
         dem_with_time = repeat(
             x.dem[:, 0, 0, mapper["dem"]["predictor"]], "b d -> b t d", t=timesteps
         )
+        assert isinstance(dem_with_time, torch.Tensor)
         output[:, :, mapper["dem"]["presto"]] = dem_with_time
-        mask[:, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
+        mask[:, :, mapper["dem"]["presto"]] = (dem_with_time == NODATAVALUE).float()
 
-    dynamic_world = np.ones((batch_size, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
+    dynamic_world = torch.full(
+        (batch_size, timesteps),
+        fill_value=NUM_DYNAMIC_WORLD_CLASSES,
+        device=device,
+        dtype=torch.long
+    )
 
     output, mask = normalize(output, mask)
     return output, mask, dynamic_world
@@ -351,6 +351,7 @@ class PretrainedPrestoWrapper(nn.Module):
         """
 
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
+        
 
         if self.head is not None and x.label is None:
             raise ValueError(
@@ -371,13 +372,18 @@ class PretrainedPrestoWrapper(nn.Module):
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
 
+        if x.latlon is None:
+            raise ValueError("latlon is required for Presto forward pass")
+
+        if not isinstance(x.latlon, torch.Tensor):
+            raise TypeError(f"Expected latlon to be torch.Tensor, got {type(x.latlon)}")
+
         embeddings = self.encoder(
-            x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
-            dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
-            latlons=to_torchtensor(x.latlon, device=device).float(),
-            mask=to_torchtensor(mask, device=device).long(),
-            # presto wants 0 indexed months, not 1 indexed months
-            month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
+            x=s1_s2_era5_srtm.float(),
+            dynamic_world=torch.tensor(dynamic_world, device=device).long(),
+            latlons=x.latlon.float(),
+            mask=mask.long(),
+            month=x.timestamps[:, :, 1] - 1,
             eval_pooling=eval_pooling,
         )
 
