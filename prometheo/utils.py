@@ -48,14 +48,18 @@ def initialize_logging(
         "<level>{message}</level>"
     )
 
+    log_filter = (
+        (lambda record: console_filter_keyword not in record["message"])
+        if console_filter_keyword is not None
+        else None
+    )
+
     # Re-add console handler with optional filtering
     logger.add(
         sys.stdout,
         level=level,
         format=custom_format,
-        filter=lambda record: console_filter_keyword not in record["message"]
-        if console_filter_keyword
-        else None,
+        filter=log_filter,
     )
 
     # File handler
