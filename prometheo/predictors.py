@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Union, Sequence
+from typing import NamedTuple, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -37,10 +37,10 @@ ArrayTensor = Union[np.ndarray, torch.Tensor]
 DEFAULT_INT = -1  # Default placeholder for missing integer values
 
 
-def to_torchtensor(x: ArrayTensor, device: torch.device = device):
+def to_torchtensor(x: ArrayTensor, device: torch.device = device, dtype=None):
     if isinstance(x, np.ndarray):
         x = torch.from_numpy(x)
-    return x.to(device)
+    return x.to(device=device) if dtype is None else x.to(device=device, dtype=dtype)
 
 
 class Predictors(NamedTuple):
@@ -65,9 +65,33 @@ class Predictors(NamedTuple):
             else:
                 return_dict[field] = val
         return return_dict
+    
+    def move_predictors_to_device(self, device: torch.device = device) -> "Predictors":
+        # Define custom dtypes for specific fields
+        expected_dtypes = {
+            "s1": torch.float32,
+            "s2": torch.float32,
+            "meteo": torch.float32,
+            "dem": torch.float32,
+            "latlon": torch.float32,
+            "label": torch.float32,
+            "timestamps": torch.int32,
+            "month": torch.int64,
+        }
+
+        return self._replace(
+            **{
+                field: to_torchtensor(val, device, expected_dtypes.get(field, None))
+                if isinstance(val, (np.ndarray, torch.Tensor)) else val
+                for field, val in self._asdict().items()
+            }
+        )
 
 
 def collate_fn(batch: Sequence[Predictors]):
     # we assume that the same values are consistently None
     collated_dict = default_collate([i.as_dict(ignore_nones=True) for i in batch])
     return Predictors(**collated_dict)
+
+
+
