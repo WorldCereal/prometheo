@@ -378,9 +378,13 @@ class PretrainedPrestoWrapper(nn.Module):
         if not isinstance(x.latlon, torch.Tensor):
             raise TypeError(f"Expected latlon to be torch.Tensor, got {type(x.latlon)}")
 
+        if not isinstance(dynamic_world, torch.Tensor):
+            dynamic_world = torch.tensor(dynamic_world, device=device)
+
+        dynamic_world = dynamic_world.to(device=device, dtype=torch.long)
         embeddings = self.encoder(
             x=s1_s2_era5_srtm.float(),
-            dynamic_world=torch.tensor(dynamic_world, device=device).long(),
+            dynamic_world=dynamic_world,
             latlons=x.latlon.float(),
             mask=mask.long(),
             month=x.timestamps[:, :, 1] - 1,
