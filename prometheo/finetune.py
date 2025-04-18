@@ -201,6 +201,7 @@ def run_finetuning(
     hyperparams: Hyperparams = Hyperparams(),
     seed: int = DEFAULT_SEED,
     setup_logging: bool = True,
+    use_balancing: bool = False,
 ):
     """Runs the finetuning process.
 
@@ -228,7 +229,11 @@ def run_finetuning(
         The random seed for reproducibility. Default is DEFAULT_SEED.
     setup_logging : bool, optional
         Whether to set up logging for the finetuning process. Default is True.
-
+    use_balancing : bool, optional
+        Whether to use class balancing for the training dataset. Default is False.
+        If True, the training dataset must have a method `get_balanced_sampler` that returns a sampler
+        for class balancing.
+        If False, the training dataset will be shuffled during training.
     Returns
     -------
     torch.nn.Module
@@ -266,13 +271,22 @@ def run_finetuning(
     generator = torch.Generator()
     generator.manual_seed(seed)
 
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=True,
-        num_workers=hyperparams.num_workers,
-        generator=generator,
-    )
+    if use_balancing and hasattr(train_ds, "get_balanced_sampler"):
+        sampler = train_ds.get_balanced_sampler()
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=hyperparams.batch_size,
+            sampler=sampler,
+            num_workers=hyperparams.num_workers,
+        )
+    else:
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=hyperparams.batch_size,
+            shuffle=True,
+            num_workers=hyperparams.num_workers,
+            generator=generator,
+        )
 
     val_dl = DataLoader(
         val_ds,
