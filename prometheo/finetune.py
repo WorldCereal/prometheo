@@ -59,6 +59,8 @@ def _train_loop(
     """
     train_loss = []
     val_loss = []
+    val_acc  = []
+    val_f1 = []
     best_loss = None
     best_model_dict = None
     epochs_since_improvement = 0
@@ -115,6 +117,36 @@ def _train_loop(
 
         val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
 
+        # --- compute validation loss + metrics ---
+        from sklearn.metrics import f1_score
+        val_preds = torch.cat(all_preds)
+        val_targets = torch.cat(all_y)
+        current_val_loss = loss_fn(val_preds, val_targets).item()
+        val_loss.append(current_val_loss)
+
+        # derive discrete predictions & true labels
+        if val_preds.dim() > 1 and val_preds.size(-1) > 1:
+            # multiclass
+            pred_labels = val_preds.argmax(dim=-1).cpu()
+            true_labels = (val_targets.argmax(dim=-1)
+                           if val_targets.dim() > pred_labels.dim()
+                           else val_targets.long()).cpu()
+        else:
+            # binary
+            probs = torch.sigmoid(val_preds).cpu()
+            pred_labels = probs.gt(0.5).long().squeeze(-1)
+            true_labels = val_targets.long().squeeze(-1).cpu()
+
+        # accuracy & # macro F1
+        from sklearn.metrics import f1_score
+        current_val_acc = pred_labels.eq(true_labels).float().mean().item()
+        current_val_f1  = f1_score(
+            true_labels.numpy(), pred_labels.numpy(),
+            average="macro", zero_division=0
+        )
+        val_acc.append(current_val_acc)
+        val_f1.append(current_val_f1)
+
         if best_loss is None:
             best_loss = val_loss[-1]
             best_model_dict = deepcopy(model.state_dict())
@@ -130,9 +162,12 @@ def _train_loop(
                     break
 
         description = (
-            f"Train metric: {train_loss[-1]:.3f},"
-            f" Val metric: {val_loss[-1]:.3f},"
-            f" Best Val Loss: {best_loss:.3f}"
+            f"Epoch {epoch+1}/{hyperparams.max_epochs} | "
+            f"Train Loss: {train_loss[-1]:.4f} | "
+            f"Val Loss: {current_val_loss:.4f} | "
+            f"Val Acc: {current_val_acc:.3f} | "
+            f"Val Macro F1: {current_val_f1:.3f} | "
+            f"Best Loss: {best_loss:.4f}"
         )
 
         if epochs_since_improvement > 0:
@@ -141,6 +176,7 @@ def _train_loop(
             description += " (improved)"
 
         pbar.set_description(description)
+        pbar.set_postfix(lr=scheduler.get_last_lr()[0])
         logger.info(
             f"PROGRESS after Epoch {epoch + 1}/{hyperparams.max_epochs}: {description}"
         )  # Only log to file if console filters on "PROGRESS"
