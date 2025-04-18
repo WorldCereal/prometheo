@@ -138,7 +138,6 @@ def _train_loop(
             true_labels = val_targets.long().squeeze(-1).cpu()
 
         # accuracy & # macro F1
-        from sklearn.metrics import f1_score
         current_val_acc = pred_labels.eq(true_labels).float().mean().item()
         current_val_f1  = f1_score(
             true_labels.numpy(), pred_labels.numpy(),
