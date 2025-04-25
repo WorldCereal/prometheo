@@ -352,11 +352,6 @@ class PretrainedPrestoWrapper(nn.Module):
 
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
 
-        if self.head is not None and x.label is None:
-            raise ValueError(
-                "Presto wrapper has a head - labels should be a part of the predictor"
-            )
-
         # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
         # they are not passed as part of the predictors.
