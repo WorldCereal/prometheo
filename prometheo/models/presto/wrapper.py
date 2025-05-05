@@ -21,6 +21,7 @@ from prometheo.predictors import (
 )
 from prometheo.utils import device
 
+from .masking import MaskParamsNoDw
 from .single_file_presto import (
     BANDS,
     BANDS_ADD,
@@ -28,6 +29,7 @@ from .single_file_presto import (
     BANDS_GROUPS_IDX,
     NUM_DYNAMIC_WORLD_CLASSES,
     FinetuningHead,
+    LossWrapper,
     Presto,
     get_sinusoid_encoding_table,
 )
@@ -208,7 +210,7 @@ def dataset_to_model(x: Predictors):
     dynamic_world = np.ones((batch_size, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
     output, mask = normalize(output, mask)
-    return output, mask, dynamic_world
+    return output, mask.astype(bool), dynamic_world
 
 
 @lru_cache(maxsize=6)
@@ -254,6 +256,41 @@ def load_presto_weights(
     return presto_model
 
 
+def update_max_sequence_length(model: Presto, max_sequence_length=72) -> Presto:
+    # reinitialize positional embeddings based on max_sequence_length
+    old_pos_embed_device = model.encoder.pos_embed.device
+    model.encoder.pos_embed = nn.Parameter(
+        torch.zeros(
+            1,
+            max_sequence_length,
+            model.encoder.pos_embed.shape[-1],
+            device=old_pos_embed_device,
+        ),
+        requires_grad=False,
+    )
+    pos_embed = get_sinusoid_encoding_table(
+        model.encoder.pos_embed.shape[1], model.encoder.pos_embed.shape[-1]
+    )
+    model.encoder.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
+
+    # reinitialize positional embeddings for decoder to deal with decadal data
+    old_pos_embed_device = model.decoder.pos_embed.device
+    model.decoder.pos_embed = nn.Parameter(
+        torch.zeros(
+            1,
+            max_sequence_length,
+            model.decoder.pos_embed.shape[-1],
+            device=old_pos_embed_device,
+        ),
+        requires_grad=False,
+    )
+    pos_embed = get_sinusoid_encoding_table(
+        model.decoder.pos_embed.shape[1], model.decoder.pos_embed.shape[-1]
+    )
+    model.decoder.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
+    return model
+
+
 class PretrainedPrestoWrapper(nn.Module):
     def __init__(
         self,
@@ -289,6 +326,9 @@ class PretrainedPrestoWrapper(nn.Module):
         if pretrained_model_path is not None:
             presto = load_presto_weights(presto, pretrained_model_path, strict=False)
 
+        # Update max sequence length to 72
+        presto = update_max_sequence_length(presto, max_sequence_length=72)
+
         # Extract the encoder from the original Presto model
         self.encoder = presto.encoder
 
@@ -298,23 +338,6 @@ class PretrainedPrestoWrapper(nn.Module):
         # but don't unfreeze the month encoder, which
         # shouldn't be trainable
         self.encoder.month_embed.requires_grad_(False)
-
-        max_sequence_length = 72
-        old_pos_embed_device = self.encoder.pos_embed.device
-        self.encoder.pos_embed = nn.Parameter(
-            torch.zeros(
-                1,
-                max_sequence_length,
-                self.encoder.pos_embed.shape[-1],
-                device=old_pos_embed_device,
-            ),
-            requires_grad=False,
-        )
-        pos_embed = get_sinusoid_encoding_table(
-            self.encoder.pos_embed.shape[1], self.encoder.pos_embed.shape[-1]
-        )
-        self.encoder.pos_embed.data.copy_(pos_embed.to(device=old_pos_embed_device))
-        self.encoder.pos_embed.requires_grad_(False)
 
         head_variables = [num_outputs, regression]
         if len([x for x in head_variables if x is not None]) not in [
@@ -390,3 +413,99 @@ class PretrainedPrestoWrapper(nn.Module):
             return self.head(embeddings)
         else:
             return embeddings
+
+
+class SSLPrestoWrapper(nn.Module):
+    def __init__(
+        self,
+        mask_params: MaskParamsNoDw,
+        pretrained_model_path: Optional[Union[str, Path]] = None,
+    ):
+        """Initialize the Presto model for SSL through a prometheo wrapper.
+
+        Parameters
+        ----------
+        pretrained_model_path : Union[str, Path], optional
+            The path to the pretrained model, by default None.
+
+        """
+        super().__init__()
+
+        # Construct original Presto model with the default configuration
+        presto = Presto.construct()
+
+        # Load pretrained model before making any adaptations
+        if pretrained_model_path is not None:
+            presto = load_pretrained(presto, pretrained_model_path, strict=False)
+
+        # Update max sequence length to 72
+        presto = update_max_sequence_length(presto, max_sequence_length=72)
+
+        # Extract the encoder and decoder from the original Presto model
+        self.encoder = presto.encoder
+        self.decoder = presto.decoder
+
+        # Specify the loss function
+        self.loss_fn = LossWrapper(nn.MSELoss())
+
+        # Set masking parameters for SSL
+        self.mask_params = mask_params
+
+    def forward(self, x: Predictors):
+        # Original inputs
+        s1_s2_era5_srtm, real_mask, dynamic_world = dataset_to_model(x)
+
+        if x.timestamps is None:
+            raise ValueError("Presto requires input timestamps")
+
+        # Get mask per band group
+        real_mask_per_token = real_mask[
+            :, :, [BANDS_GROUPS_IDX[key][0] for key in BANDS_GROUPS_IDX]
+        ]
+
+        # ------------------------------------------------
+        # Here is the slow for-loop we need to get rid of!
+        # Apply additional masking
+        extra_mask = real_mask.copy()
+        x_eo = s1_s2_era5_srtm.copy()
+        y_eo = s1_s2_era5_srtm.copy()
+
+        for i in range(s1_s2_era5_srtm.shape[0]):
+            extra_mask[i], x_eo[i], y_eo[i], strat = self.mask_params.mask_data(
+                s1_s2_era5_srtm[i], real_mask_per_token[i]
+            )
+
+        # ------------------------------------------------
+
+        # Encode
+        enc, kept_indices, removed_indices = self.encoder(
+            x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
+            dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
+            latlons=to_torchtensor(x.latlon, device=device).float(),
+            mask=to_torchtensor(extra_mask, device=device).long(),
+            # presto wants 0 indexed months, not 1 indexed months
+            month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
+        )
+
+        # Reconstruct
+        y_pred, dw_pred = self.decoder(
+            enc,
+            kept_indices,
+            removed_indices,
+            to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
+        )
+
+        # set all DEM timesteps except the first one to unmasked, so that
+        # they will get ignored by the loss function even if the DEM
+        # value was masked
+        extra_mask[:, 1:, BANDS_GROUPS_IDX["SRTM"]] = False
+
+        # set the "truly masked" values to unmasked, so they also get ignored in the loss
+        extra_mask[real_mask] = False
+
+        # Compute loss
+        loss = self.loss_fn(
+            y_pred[extra_mask], to_torchtensor(y_eo[extra_mask], device=device)
+        )
+
+        return loss, y_pred, extra_mask
