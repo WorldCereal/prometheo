@@ -5,7 +5,9 @@ import torch
 from einops import repeat
 
 from prometheo.models import Presto
-from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, Predictors
+from prometheo.predictors import (DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS,
+                                  Predictors)
+from prometheo.utils import device
 
 
 class TestPresto(unittest.TestCase):
@@ -21,8 +23,8 @@ class TestPresto(unittest.TestCase):
             latlon=np.random.rand(b, 2),
             label=np.ones((b, 1, 1, 1, 1)),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
-        )
-        model = Presto()
+        ).move_predictors_to_device(device)
+        model = Presto().to(device)
         output_embeddings = model(x)
         self.assertEqual(
             output_embeddings.shape, (b, h, w, 1, model.encoder.embedding_size)
@@ -36,14 +38,14 @@ class TestPresto(unittest.TestCase):
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             latlon=np.random.rand(b, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
-        )
-        model = Presto()
+        ).move_predictors_to_device(device)
+        model = Presto().to(device)
         output_embeddings = model(x, eval_pooling="time")
         self.assertEqual(
             output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size)
         )
 
-        model = Presto()
+        model = Presto().to(device)
         output_embeddings = model(x)
         self.assertEqual(
             output_embeddings.shape, (b, h, w, 1, model.encoder.embedding_size)
@@ -83,8 +85,8 @@ class TestPresto(unittest.TestCase):
             latlon=np.random.rand(b, 2),
             label=np.ones((b, h, w, t, 1)),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
-        )
-        model = Presto()
+        ).move_predictors_to_device(device)
+        model = Presto().to(device)
         output_embeddings = model(x)
         self.assertEqual(
             output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size)
@@ -101,8 +103,8 @@ class TestPresto(unittest.TestCase):
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
-        )
-        model = Presto()
+        ).move_predictors_to_device(device)
+        model = Presto().to(device)
         output_embeddings = model(x, eval_pooling=None)
         self.assertEqual(
             output_embeddings[0].shape, (b, 34, model.encoder.embedding_size)

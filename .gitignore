@@ -19,3 +19,4 @@ gha-creds-*.json
 .vscode
 scrap
 imgs
+*.egg-info/

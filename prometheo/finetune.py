@@ -9,7 +9,7 @@ from torch.optim import AdamW, lr_scheduler
 from torch.utils.data import DataLoader, Dataset
 from tqdm.auto import tqdm
 
-from prometheo.predictors import NODATAVALUE
+from prometheo.predictors import NODATAVALUE, Predictors
 from prometheo.utils import (  # config_dir,; data_dir,; default_model_path,
     DEFAULT_SEED,
     device,
@@ -62,6 +62,8 @@ def _train_loop(
     """
     train_loss = []
     val_loss = []
+    val_acc = []
+    val_f1 = []
     best_loss = None
     best_model_dict = None
     epochs_since_improvement = 0
@@ -72,11 +74,29 @@ def _train_loop(
 
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
+
+            batch = batch.move_predictors_to_device(device)
+            assert isinstance(batch, Predictors)
+
             preds = model(batch)
+            if not isinstance(batch.label, torch.Tensor):
+                raise ValueError(
+                    "Predictors.label must be a torch.Tensor during training"
+                )
             targets = batch.label.to(device).float()
+
+            if targets.dim() > 1 and targets.size(-1) > 1:
+                # Multiclass case -> convert to class indices for loss computation
+                nodata = (
+                    targets[..., 0] == NODATAVALUE
+                )  # Keep track of nodata timesteps
+                targets = targets.argmax(dim=-1)  # Shape: [N]
+                targets[nodata] = NODATAVALUE  # Put back nodata timesteps
+
             loss = loss_fn(
                 preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
             )
+
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -88,14 +108,56 @@ def _train_loop(
 
         for batch in val_dl:
             with torch.no_grad():
+                batch = batch.move_predictors_to_device(device)
+                assert isinstance(batch, Predictors)
                 preds = model(batch)
+
+                if not isinstance(batch.label, torch.Tensor):
+                    raise ValueError(
+                        "Predictors.label must be a torch.Tensor during training"
+                    )
+
                 targets = batch.label.to(device).float()
+                if targets.dim() > 1 and targets.size(-1) > 1:
+                    # Multiclass case -> convert to class indices for loss computation
+                    nodata = (
+                        targets[..., 0] == NODATAVALUE
+                    )  # Keep track of nodata timesteps
+                    targets = targets.argmax(dim=-1)  # Shape: [N]
+                    targets[nodata] = NODATAVALUE  # Put back nodata timesteps
                 preds = preds[targets != NODATAVALUE]
                 targets = targets[targets != NODATAVALUE]
                 all_preds.append(preds)
                 all_y.append(targets)
 
-        val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
+        # val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))  # Duplicate??
+
+        # --- compute validation loss + metrics ---
+        from sklearn.metrics import f1_score
+
+        val_preds = torch.cat(all_preds)
+        val_targets = torch.cat(all_y)
+        current_val_loss = loss_fn(val_preds, val_targets).item()
+        val_loss.append(current_val_loss)
+
+        # derive discrete predictions & true labels
+        if val_preds.dim() > 1 and val_preds.size(-1) > 1:
+            # multiclass
+            pred_labels = val_preds.argmax(dim=-1).cpu()
+            true_labels = val_targets.long().cpu()
+        else:
+            # binary
+            probs = torch.sigmoid(val_preds).cpu()
+            pred_labels = probs.gt(0.5).long().squeeze(-1)
+            true_labels = val_targets.long().squeeze(-1).cpu()
+
+        # accuracy & # macro F1
+        current_val_acc = pred_labels.eq(true_labels).float().mean().item()
+        current_val_f1 = f1_score(
+            true_labels.numpy(), pred_labels.numpy(), average="macro", zero_division=0
+        )
+        val_acc.append(current_val_acc)
+        val_f1.append(current_val_f1)
 
         if best_loss is None:
             best_loss = val_loss[-1]
@@ -112,9 +174,12 @@ def _train_loop(
                     break
 
         description = (
-            f"Train metric: {train_loss[-1]:.3f},"
-            f" Val metric: {val_loss[-1]:.3f},"
-            f" Best Val Loss: {best_loss:.3f}"
+            f"Epoch {epoch + 1}/{hyperparams.max_epochs} | "
+            f"Train Loss: {train_loss[-1]:.4f} | "
+            f"Val Loss: {current_val_loss:.4f} | "
+            f"Val Acc: {current_val_acc:.3f} | "
+            f"Val Macro F1: {current_val_f1:.3f} | "
+            f"Best Loss: {best_loss:.4f}"
         )
 
         if epochs_since_improvement > 0:
@@ -123,6 +188,7 @@ def _train_loop(
             description += " (improved)"
 
         pbar.set_description(description)
+        pbar.set_postfix(lr=scheduler.get_last_lr()[0])
         logger.info(
             f"PROGRESS after Epoch {epoch + 1}/{hyperparams.max_epochs}: {description}"
         )  # Only log to file if console filters on "PROGRESS"
@@ -183,6 +249,7 @@ def run_finetuning(
     hyperparams: Hyperparams = Hyperparams(),
     seed: int = DEFAULT_SEED,
     setup_logging: bool = True,
+    use_balancing: bool = False,
 ):
     """Runs the finetuning process.
 
@@ -210,7 +277,11 @@ def run_finetuning(
         The random seed for reproducibility. Default is DEFAULT_SEED.
     setup_logging : bool, optional
         Whether to set up logging for the finetuning process. Default is True.
-
+    use_balancing : bool, optional
+        Whether to use class balancing for the training dataset. Default is False.
+        If True, the training dataset must have a method `get_balanced_sampler` that returns a sampler
+        for class balancing.
+        If False, the training dataset will be shuffled during training.
     Returns
     -------
     torch.nn.Module
@@ -248,13 +319,22 @@ def run_finetuning(
     generator = torch.Generator()
     generator.manual_seed(seed)
 
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=True,
-        num_workers=hyperparams.num_workers,
-        generator=generator,
-    )
+    if use_balancing and hasattr(train_ds, "get_balanced_sampler"):
+        sampler = train_ds.get_balanced_sampler()
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=hyperparams.batch_size,
+            sampler=sampler,
+            num_workers=hyperparams.num_workers,
+        )
+    else:
+        train_dl = DataLoader(
+            train_ds,
+            batch_size=hyperparams.batch_size,
+            shuffle=True,
+            num_workers=hyperparams.num_workers,
+            generator=generator,
+        )
 
     val_dl = DataLoader(
         val_ds,
@@ -263,6 +343,7 @@ def run_finetuning(
         num_workers=hyperparams.num_workers,
     )
 
+    assert scheduler is not None
     # Run the finetuning loop
     finetuned_model = _train_loop(
         model, train_dl, val_dl, hyperparams, loss_fn, optimizer, scheduler
