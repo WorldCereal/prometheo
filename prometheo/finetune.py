@@ -11,7 +11,11 @@ from tqdm.auto import tqdm
 
 from prometheo.predictors import NODATAVALUE, Predictors
 from prometheo.utils import (  # config_dir,; data_dir,; default_model_path,
-    DEFAULT_SEED, device, initialize_logging, seed_everything)
+    DEFAULT_SEED,
+    device,
+    initialize_logging,
+    seed_everything,
+)
 
 
 @dataclass
@@ -21,7 +25,6 @@ class Hyperparams:
     batch_size: int = 256
     patience: int = 20
     num_workers: int = 8
-
 
 
 def _train_loop(
@@ -59,7 +62,7 @@ def _train_loop(
     """
     train_loss = []
     val_loss = []
-    val_acc  = []
+    val_acc = []
     val_f1 = []
     best_loss = None
     best_model_dict = None
@@ -77,16 +80,19 @@ def _train_loop(
 
             preds = model(batch)
             if not isinstance(batch.label, torch.Tensor):
-                raise ValueError("Predictors.label must be a torch.Tensor during training")
+                raise ValueError(
+                    "Predictors.label must be a torch.Tensor during training"
+                )
             targets = batch.label.to(device).float()
-            # targets = batch.label.view(-1).long().to(device).float()
 
-            # assert preds.shape == targets.shape
-            # print(targets.shape)
+            if targets.dim() > 1 and targets.size(-1) > 1:
+                # Multiclass case -> convert to class indices for loss computation
+                nodata = (
+                    targets[..., 0] == NODATAVALUE
+                )  # Keep track of nodata timesteps
+                targets = targets.argmax(dim=-1)  # Shape: [N]
+                targets[nodata] = NODATAVALUE  # Put back nodata timesteps
 
-            # loss = loss_fn(
-            #     preds[targets != NODATAVALUE].squeeze(-1), targets[targets != NODATAVALUE].float()
-            # )
             loss = loss_fn(
                 preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
             )
@@ -105,20 +111,30 @@ def _train_loop(
                 batch = batch.move_predictors_to_device(device)
                 assert isinstance(batch, Predictors)
                 preds = model(batch)
-        
+
                 if not isinstance(batch.label, torch.Tensor):
-                    raise ValueError("Predictors.label must be a torch.Tensor during training")
+                    raise ValueError(
+                        "Predictors.label must be a torch.Tensor during training"
+                    )
 
                 targets = batch.label.to(device).float()
+                if targets.dim() > 1 and targets.size(-1) > 1:
+                    # Multiclass case -> convert to class indices for loss computation
+                    nodata = (
+                        targets[..., 0] == NODATAVALUE
+                    )  # Keep track of nodata timesteps
+                    targets = targets.argmax(dim=-1)  # Shape: [N]
+                    targets[nodata] = NODATAVALUE  # Put back nodata timesteps
                 preds = preds[targets != NODATAVALUE]
                 targets = targets[targets != NODATAVALUE]
                 all_preds.append(preds)
                 all_y.append(targets)
 
-        val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
+        # val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))  # Duplicate??
 
         # --- compute validation loss + metrics ---
         from sklearn.metrics import f1_score
+
         val_preds = torch.cat(all_preds)
         val_targets = torch.cat(all_y)
         current_val_loss = loss_fn(val_preds, val_targets).item()
@@ -128,9 +144,7 @@ def _train_loop(
         if val_preds.dim() > 1 and val_preds.size(-1) > 1:
             # multiclass
             pred_labels = val_preds.argmax(dim=-1).cpu()
-            true_labels = (val_targets.argmax(dim=-1)
-                           if val_targets.dim() > pred_labels.dim()
-                           else val_targets.long()).cpu()
+            true_labels = val_targets.long().cpu()
         else:
             # binary
             probs = torch.sigmoid(val_preds).cpu()
@@ -139,9 +153,8 @@ def _train_loop(
 
         # accuracy & # macro F1
         current_val_acc = pred_labels.eq(true_labels).float().mean().item()
-        current_val_f1  = f1_score(
-            true_labels.numpy(), pred_labels.numpy(),
-            average="macro", zero_division=0
+        current_val_f1 = f1_score(
+            true_labels.numpy(), pred_labels.numpy(), average="macro", zero_division=0
         )
         val_acc.append(current_val_acc)
         val_f1.append(current_val_f1)
@@ -161,7 +174,7 @@ def _train_loop(
                     break
 
         description = (
-            f"Epoch {epoch+1}/{hyperparams.max_epochs} | "
+            f"Epoch {epoch + 1}/{hyperparams.max_epochs} | "
             f"Train Loss: {train_loss[-1]:.4f} | "
             f"Val Loss: {current_val_loss:.4f} | "
             f"Val Acc: {current_val_acc:.3f} | "
