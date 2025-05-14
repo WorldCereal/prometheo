@@ -212,18 +212,18 @@ def dataset_to_model(x: Predictors):
 
 
 @lru_cache(maxsize=6)
-def load_pretrained(
-    model: Presto,
-    model_path: Union[str, Path] = default_model_path,
+def load_presto_weights(
+    presto_model: Presto,
+    weights_path: Union[str, Path] = default_model_path,
     strict: bool = True,
 ):
     """Load pretrained weights into a Presto model.
 
     Parameters
     ----------
-    model : Presto
+    presto_model : Presto
         The Presto model to load the pretrained weights into.
-    model_path : Union[str, Path], optional
+    weights_path : Union[str, Path], optional
         The path to the pretrained weights file. If not provided, the default model path will be used.
     strict : bool, optional
         Whether to strictly enforce that the keys in the pretrained weights match the keys in the model.
@@ -240,18 +240,18 @@ def load_pretrained(
     FileNotFoundError
         If the specified model path does not exist.
     """
-    if isinstance(model_path, str) and (model_path.startswith("http")):
-        response = requests.get(model_path)
+    if isinstance(weights_path, str) and (weights_path.startswith("http")):
+        response = requests.get(weights_path)
         presto_model_layers = torch.load(
             io.BytesIO(response.content), map_location=device
         )
-        model.load_state_dict(presto_model_layers, strict=strict)
+        presto_model.load_state_dict(presto_model_layers, strict=strict)
     else:
-        model.load_state_dict(
-            torch.load(model_path, map_location=device), strict=strict
+        presto_model.load_state_dict(
+            torch.load(weights_path, map_location=device), strict=strict
         )
 
-    return model
+    return presto_model
 
 
 class PretrainedPrestoWrapper(nn.Module):
@@ -287,7 +287,7 @@ class PretrainedPrestoWrapper(nn.Module):
 
         # Load pretrained model before making any adaptations
         if pretrained_model_path is not None:
-            presto = load_pretrained(presto, pretrained_model_path, strict=False)
+            presto = load_presto_weights(presto, pretrained_model_path, strict=False)
 
         # Extract the encoder from the original Presto model
         self.encoder = presto.encoder
@@ -352,11 +352,6 @@ class PretrainedPrestoWrapper(nn.Module):
 
         s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
         
-
-        if self.head is not None and x.label is None:
-            raise ValueError(
-                "Presto wrapper has a head - labels should be a part of the predictor"
-            )
 
         # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
