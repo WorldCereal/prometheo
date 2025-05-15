@@ -300,12 +300,13 @@ class ScaleAgDataset(Dataset):
         elif self.task_type == "binary":
             if self.positive_labels is not None:
                 target = self.binary_mapping[target]
-            assert target in [
-                0,
-                1,
-            ], (
-                f"Invalid target value: {target}. Target must be either 0 or 1. Please provide pos_labels list."
-            )
+            assert (
+                target
+                in [
+                    0,
+                    1,
+                ]
+            ), f"Invalid target value: {target}. Target must be either 0 or 1. Please provide pos_labels list."
 
         # convert classes to indices for multiclass
         elif self.task_type == "multiclass":

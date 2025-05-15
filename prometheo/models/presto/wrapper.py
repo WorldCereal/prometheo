@@ -2,7 +2,7 @@ import io
 import warnings
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Optional, Union
 
 import numpy as np
 import requests
@@ -20,6 +20,7 @@ from prometheo.predictors import (
     to_torchtensor,
 )
 from prometheo.utils import device
+from ..pooling import PoolingMethods
 
 from .single_file_presto import (
     BANDS,
@@ -334,7 +335,7 @@ class PretrainedPrestoWrapper(nn.Module):
             )
 
     def forward(
-        self, x: Predictors, eval_pooling: Literal["global", "time", None] = "global"
+        self, x: Predictors, eval_pooling: PoolingMethods = PoolingMethods.GLOBAL
     ):
         """
         If x.label is not None, then we infer the output pooling from the labels (time or global).
@@ -357,11 +358,11 @@ class PretrainedPrestoWrapper(nn.Module):
         # they are not passed as part of the predictors.
         if x.label is not None:
             if x.label.shape[3] == dynamic_world.shape[1]:
-                eval_pooling = "time"
+                eval_pooling = PoolingMethods.TIME
             else:
                 if x.label.shape[1] != 1:
                     raise ValueError(f"Unexpected label shape {x.label.shape}")
-                eval_pooling = "global"
+                eval_pooling = PoolingMethods.GLOBAL
 
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
@@ -377,9 +378,9 @@ class PretrainedPrestoWrapper(nn.Module):
         )
 
         # Need to reintroduce spatial and temporal dims according to prometheo convention
-        if eval_pooling == "global":
+        if eval_pooling == PoolingMethods.GLOBAL:
             embeddings = embeddings.reshape((-1, 1, 1, 1, embeddings.shape[-1]))
-        elif eval_pooling == "time":
+        elif eval_pooling == PoolingMethods.TIME:
             embeddings = embeddings.reshape(
                 (-1, 1, 1, x.timestamps.shape[1], embeddings.shape[-1])
             )

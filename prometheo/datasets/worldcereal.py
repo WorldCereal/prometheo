@@ -112,9 +112,9 @@ class WorldCerealDataset(Dataset):
             )
 
         # Sanity check to make sure valid_position is still within the extracted timesteps
-        assert valid_position in timestep_positions, (
-            f"Valid position {valid_position} not in timestep positions {timestep_positions}"
-        )
+        assert (
+            valid_position in timestep_positions
+        ), f"Valid position {valid_position} not in timestep positions {timestep_positions}"
 
         return timestep_positions, valid_position
 

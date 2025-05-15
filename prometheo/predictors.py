@@ -3,6 +3,7 @@ from typing import NamedTuple, Optional, Union, Sequence
 import numpy as np
 import torch
 from torch.utils.data import default_collate
+from typing import Generator
 
 from prometheo.utils import device
 
@@ -65,6 +66,26 @@ class Predictors(NamedTuple):
             else:
                 return_dict[field] = val
         return return_dict
+
+    @property
+    def B(self) -> int:
+        for field in self._fields:
+            val = getattr(self, field)
+            if val is not None:
+                return val.shape[0]
+        raise ValueError("No assigned ArrayTensors! B cannot be determined")
+
+    def as_batches(self, batch_size: int) -> Generator["Predictors", None, None]:
+        cur_idx = 0
+        predictor_as_dict = self.as_dict()
+        while cur_idx + batch_size < self.B:
+            yield Predictors(
+                **{
+                    key: val[cur_idx : cur_idx + batch_size]
+                    for key, val in predictor_as_dict
+                }
+            )
+            cur_idx += batch_size
 
 
 def collate_fn(batch: Sequence[Predictors]):
