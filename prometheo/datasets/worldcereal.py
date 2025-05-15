@@ -1,10 +1,12 @@
 from datetime import datetime
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, Callable
 
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
-
+import xarray as xr
+import torch
+from torch import nn
 from prometheo.predictors import (
     DEM_BANDS,
     METEO_BANDS,
@@ -13,6 +15,10 @@ from prometheo.predictors import (
     S2_BANDS,
     Predictors,
 )
+from prometheo.models import Presto
+from prometheo.models.pooling import PoolingMethods
+from prometheo.infer import extract_features_from_model
+import functools
 
 
 class WorldCerealDataset(Dataset):
@@ -506,3 +512,70 @@ def _dekad_startdate_from_date(dt_in):
     if dt_in.day >= 21:
         startdate = datetime(dt_in.year, dt_in.month, 21, 0, 0, 0)
     return startdate
+
+
+def generate_predictor(x: pd.DataFrame | xr.DataArray) -> Predictors:
+    raise NotImplementedError
+
+
+@functools.lru_cache(maxsize=6)
+def compile_encoder(presto_encoder: nn.Module) -> Callable:
+    """Helper function that compiles the encoder of a Presto model
+    and performs a warm-up on dummy data. The lru_cache decorator
+    ensures caching on compute nodes to be able to actually benefit
+    from the compilation process.
+
+    Parameters
+    ----------
+    presto_encoder : nn.Module
+        Encoder part of Presto model to compile
+
+    """
+
+    presto_encoder = torch.compile(presto_encoder)  # type: ignore
+
+    for _ in range(3):
+        presto_encoder(
+            torch.rand((1, 12, 17)),
+            torch.ones((1, 12)).long(),
+            torch.rand(1, 2),
+        )
+
+    return presto_encoder
+
+
+def get_presto_features(
+    inarr: pd.DataFrame | xr.DataArray,
+    presto_url: str,
+    epsg: int = 4326,
+    batch_size: int = 8192,
+    compile: bool = False,
+) -> np.ndarray | xr.DataArray:
+    """
+    Extracts features from input data using Presto.
+
+    Args:
+        inarr (xr.DataArray or pd.DataFrame): Input data as xarray DataArray or pandas DataFrame.
+        presto_url (str): URL to the pretrained Presto model.
+        epsg (int) : EPSG code describing the coordinates.
+        batch_size (int): Batch size to be used for Presto inference.
+        compile (bool): Whether to compile the model before extracting features.
+
+    Returns:
+        xr.DataArray or np.ndarray: Extracted features as xarray DataArray or numpy ndarray.
+    """
+
+    # Load the model
+    presto_model = Presto(pretrained_model_path=presto_url)
+    # Compile for optimized inference. Note that warmup takes some time
+    # so this is only recommended for larger inference jobs
+    if compile:
+        presto_model.encoder = compile_encoder(presto_model.encoder)
+
+    predictor = generate_predictor(inarr)
+    # fixing the pooling method to keep the function signature the same
+    # as in presto-worldcereal but this could be an input argument too
+    _ = extract_features_from_model(presto_model, predictor, batch_size, PoolingMethods.GLOBAL)
+
+    # todo - return the output tensors to the right shape, either xarray or df
+    raise NotImplementedError

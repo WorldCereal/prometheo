@@ -217,7 +217,7 @@ def load_presto_weights(
     presto_model: Presto,
     weights_path: Union[str, Path] = default_model_path,
     strict: bool = True,
-):
+) -> Presto:
     """Load pretrained weights into a Presto model.
 
     Parameters
