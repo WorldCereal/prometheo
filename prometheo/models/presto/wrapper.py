@@ -335,7 +335,7 @@ class PretrainedPrestoWrapper(nn.Module):
             )
 
     def forward(
-        self, x: Predictors, eval_pooling: PoolingMethods | None = None
+        self, x: Predictors, eval_pooling: PoolingMethods | None = PoolingMethods.GLOBAL
     ):
         """
         If x.label is not None, then we infer the output pooling from the labels (time or global).
@@ -388,6 +388,8 @@ class PretrainedPrestoWrapper(nn.Module):
             pass  # In case of no pooling we assume SSL and don't change embeddings
 
         if self.head is not None:
+            if eval_pooling is None:
+                raise ValueError("Can't use the head without a pooling method")
             return self.head(embeddings)
         else:
             return embeddings
