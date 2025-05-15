@@ -19,6 +19,8 @@ from prometheo.models import Presto
 from prometheo.models.pooling import PoolingMethods
 from prometheo.infer import extract_features_from_model
 import functools
+from einops import rearrange
+from pyproj import Transformer
 
 
 class WorldCerealDataset(Dataset):
@@ -514,7 +516,24 @@ def _dekad_startdate_from_date(dt_in):
     return startdate
 
 
-def generate_predictor(x: pd.DataFrame | xr.DataArray) -> Predictors:
+def _predictor_from_xarray(x: xr.DataArray, epsg: int) -> Predictors:
+    # extract the latlons
+    # EPSG:4326 is the supported crs for presto
+    transformer = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+    x, y = np.meshgrid(x.x, x.y)
+    lon, lat = transformer.transform(x, y)
+
+    predictors_dict = {
+        # 2D array where each row represents a pair of latitude and longitude coordinates.
+        "latlon": rearrange(np.stack([lat, lon]), "c x y -> (x y) c")
+    }
+    # todo - eo data
+    return Predictors(**predictors_dict)
+
+
+def generate_predictor(x: pd.DataFrame | xr.DataArray, epsg: int) -> Predictors:
+    if isinstance(x, xr.DataArray):
+        return _predictor_from_xarray(x, epsg)
     raise NotImplementedError
 
 
@@ -572,7 +591,7 @@ def get_presto_features(
     if compile:
         presto_model.encoder = compile_encoder(presto_model.encoder)
 
-    predictor = generate_predictor(inarr)
+    predictor = generate_predictor(inarr, epsg)
     # fixing the pooling method to keep the function signature the same
     # as in presto-worldcereal but this could be an input argument too
     features = extract_features_from_model(presto_model, predictor, batch_size, PoolingMethods.GLOBAL)
