@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from einops import repeat
 
+from prometheo.models.pooling import PoolingMethods
 from prometheo.models import Presto
 from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, Predictors
 
@@ -38,7 +39,7 @@ class TestPresto(unittest.TestCase):
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
-        output_embeddings = model(x, eval_pooling="time")
+        output_embeddings = model(x, eval_pooling=PoolingMethods.TIME)
         self.assertEqual(
             output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size)
         )
