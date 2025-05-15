@@ -575,7 +575,18 @@ def get_presto_features(
     predictor = generate_predictor(inarr)
     # fixing the pooling method to keep the function signature the same
     # as in presto-worldcereal but this could be an input argument too
-    _ = extract_features_from_model(presto_model, predictor, batch_size, PoolingMethods.GLOBAL)
+    features = extract_features_from_model(presto_model, predictor, batch_size, PoolingMethods.GLOBAL)
 
     # todo - return the output tensors to the right shape, either xarray or df
-    raise NotImplementedError
+    if isinstance(inarr, pd.DataFrame):
+        return features
+    else:
+        features = features(features, "(x y) c -> x y c", x=len(inarr.x), y=len(inarr.y))
+        ft_names = [f"presto_ft_{i}" for i in range(presto_model.encoder.embedding_size)]
+        features_da = xr.DataArray(
+            features,
+            dims=["x", "y", "bands"],
+            coords={"x": inarr.x, "y": inarr.y, "bands": ft_names},
+        )
+
+        return features_da
