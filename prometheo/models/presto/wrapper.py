@@ -374,7 +374,7 @@ class PretrainedPrestoWrapper(nn.Module):
             mask=to_torchtensor(mask, device=device).long(),
             # presto wants 0 indexed months, not 1 indexed months
             month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
-            eval_pooling=eval_pooling,
+            eval_pooling=eval_pooling.value,
         )
 
         # Need to reintroduce spatial and temporal dims according to prometheo convention
