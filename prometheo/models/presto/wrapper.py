@@ -335,7 +335,7 @@ class PretrainedPrestoWrapper(nn.Module):
             )
 
     def forward(
-        self, x: Predictors, eval_pooling: PoolingMethods = PoolingMethods.GLOBAL
+        self, x: Predictors, eval_pooling: PoolingMethods | None = None
     ):
         """
         If x.label is not None, then we infer the output pooling from the labels (time or global).
@@ -374,7 +374,7 @@ class PretrainedPrestoWrapper(nn.Module):
             mask=to_torchtensor(mask, device=device).long(),
             # presto wants 0 indexed months, not 1 indexed months
             month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
-            eval_pooling=eval_pooling.value,
+            eval_pooling=eval_pooling.value if eval_pooling is not None else None,
         )
 
         # Need to reintroduce spatial and temporal dims according to prometheo convention
