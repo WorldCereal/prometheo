@@ -53,7 +53,7 @@ class Predictors(NamedTuple):
     # for now we ignore them
     # aux_inputs: Optional[List[ArrayTensor]] = None
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[ArrayTensor] = None  # [B, H, W, T, num_outputs]
+    label: Optional[ArrayTensor] = None  # [B, H, W, T, 1]
     timestamps: Optional[ArrayTensor] = None  # [B, T, D=3], where D=[day, month, year]
 
     def as_dict(self, ignore_nones: bool = True):
@@ -65,7 +65,7 @@ class Predictors(NamedTuple):
             else:
                 return_dict[field] = val
         return return_dict
-    
+
     def move_predictors_to_device(self, device: torch.device = device) -> "Predictors":
         # Define custom dtypes for specific fields
         expected_dtypes = {
@@ -82,7 +82,8 @@ class Predictors(NamedTuple):
         return self._replace(
             **{
                 field: to_torchtensor(val, device, expected_dtypes.get(field, None))
-                if isinstance(val, (np.ndarray, torch.Tensor)) else val
+                if isinstance(val, (np.ndarray, torch.Tensor))
+                else val
                 for field, val in self._asdict().items()
             }
         )
@@ -92,6 +93,3 @@ def collate_fn(batch: Sequence[Predictors]):
     # we assume that the same values are consistently None
     collated_dict = default_collate([i.as_dict(ignore_nones=True) for i in batch])
     return Predictors(**collated_dict)
-
-
-

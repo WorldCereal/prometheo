@@ -83,16 +83,17 @@ def _train_loop(
                 raise ValueError(
                     "Predictors.label must be a torch.Tensor during training"
                 )
-            targets = batch.label.to(device).float()
 
-            if targets.dim() > 1 and targets.size(-1) > 1:
-                # Multiclass case -> convert to class indices for loss computation
-                nodata = (
-                    targets[..., 0] == NODATAVALUE
-                )  # Keep track of nodata timesteps
-                targets = targets.argmax(dim=-1)  # Shape: [N]
-                targets[nodata] = NODATAVALUE  # Put back nodata timesteps
+            targets = batch.label.to(device)
+            if preds.dim() > 1 and preds.size(-1) > 1:
+                # multiclass case: targets should be class indices
+                # predictions are multiclass logits
+                targets = targets.long().squeeze(axis=-1)
+            else:
+                # binary case
+                targets = targets.float()
 
+            # Compute loss
             loss = loss_fn(
                 preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
             )
@@ -117,14 +118,16 @@ def _train_loop(
                         "Predictors.label must be a torch.Tensor during training"
                     )
 
-                targets = batch.label.to(device).float()
-                if targets.dim() > 1 and targets.size(-1) > 1:
-                    # Multiclass case -> convert to class indices for loss computation
-                    nodata = (
-                        targets[..., 0] == NODATAVALUE
-                    )  # Keep track of nodata timesteps
-                    targets = targets.argmax(dim=-1)  # Shape: [N]
-                    targets[nodata] = NODATAVALUE  # Put back nodata timesteps
+                targets = batch.label.to(device)
+
+                if preds.dim() > 1 and preds.size(-1) > 1:
+                    # multiclass case: targets should be class indices
+                    # predictions are multiclass logits
+                    targets = targets.long().squeeze(axis=-1)
+                else:
+                    # binary case
+                    targets = targets.float()
+
                 preds = preds[targets != NODATAVALUE]
                 targets = targets[targets != NODATAVALUE]
                 all_preds.append(preds)
@@ -144,12 +147,13 @@ def _train_loop(
         if val_preds.dim() > 1 and val_preds.size(-1) > 1:
             # multiclass
             pred_labels = val_preds.argmax(dim=-1).cpu()
-            true_labels = val_targets.long().cpu()
+            true_labels = val_targets.cpu()
         else:
             # binary
+            # TODO: what if this is regression?
             probs = torch.sigmoid(val_preds).cpu()
             pred_labels = probs.gt(0.5).long().squeeze(-1)
-            true_labels = val_targets.long().squeeze(-1).cpu()
+            true_labels = val_targets.cpu()
 
         # accuracy & # macro F1
         current_val_acc = pred_labels.eq(true_labels).float().mean().item()
