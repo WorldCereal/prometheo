@@ -6,6 +6,7 @@ import pandas as pd
 from loguru import logger
 from torch.nn import BCEWithLogitsLoss
 from torch.optim import AdamW, lr_scheduler
+from torch.utils.data import DataLoader
 
 from prometheo import finetune
 from prometheo.datasets import WorldCerealLabelledDataset
@@ -31,6 +32,9 @@ class TestFinetuning(TestCase):
         train_ds = WorldCerealLabelledDataset(df)
         val_ds = WorldCerealLabelledDataset(df)
 
+        train_dl = DataLoader(train_ds, batch_size=2, shuffle=True)
+        val_dl = DataLoader(val_ds, batch_size=2, shuffle=False)
+
         # Construct the model with finetuning head
         model = Presto(num_outputs=train_ds.num_outputs, regression=False)
 
@@ -41,8 +45,8 @@ class TestFinetuning(TestCase):
         with tempfile.TemporaryDirectory(dir=".") as output_dir:
             finetune.run_finetuning(
                 model,
-                train_ds,
-                val_ds,
+                train_dl,
+                val_dl,
                 experiment_name="test",
                 output_dir=output_dir,
                 loss_fn=BCEWithLogitsLoss(),
@@ -59,6 +63,9 @@ class TestFinetuning(TestCase):
         train_ds = WorldCerealLabelledDataset(df, time_explicit=True)
         val_ds = WorldCerealLabelledDataset(df, time_explicit=True)
 
+        train_dl = DataLoader(train_ds, batch_size=2, shuffle=True)
+        val_dl = DataLoader(val_ds, batch_size=2, shuffle=False)
+
         # Construct the model with finetuning head
         model = Presto(num_outputs=train_ds.num_outputs, regression=False)
 
@@ -72,8 +79,8 @@ class TestFinetuning(TestCase):
         with tempfile.TemporaryDirectory(dir=".") as output_dir:
             finetune.run_finetuning(
                 model,
-                train_ds,
-                val_ds,
+                train_dl,
+                val_dl,
                 experiment_name="test_advanced",
                 output_dir=output_dir,
                 loss_fn=BCEWithLogitsLoss(),

@@ -6,19 +6,12 @@ from resources import load_dataframe
 from torch.utils.data import DataLoader
 
 from prometheo.datasets import WorldCerealDataset, WorldCerealLabelledDataset
-from prometheo.datasets.worldcereal import (
-    get_dekad_timestamp_components,
-    get_monthly_timestamp_components,
-)
+from prometheo.datasets.worldcereal import (get_dekad_timestamp_components,
+                                            get_monthly_timestamp_components)
 from prometheo.models import Presto
-from prometheo.predictors import (
-    DEM_BANDS,
-    METEO_BANDS,
-    NODATAVALUE,
-    S1_BANDS,
-    S2_BANDS,
-    collate_fn,
-)
+from prometheo.predictors import (DEM_BANDS, METEO_BANDS, NODATAVALUE,
+                                  S1_BANDS, S2_BANDS, collate_fn)
+from prometheo.utils import device
 
 models_to_test = [Presto]
 
@@ -73,7 +66,8 @@ class TestDataset(TestCase):
         self.check_batch(batch, batch_size, 12)
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -92,7 +86,8 @@ class TestDataset(TestCase):
         self.check_batch(batch, batch_size, num_timesteps)
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -113,7 +108,8 @@ class TestDataset(TestCase):
         self.assertTrue((np.isin(batch.label.unique().numpy(), [0, NODATAVALUE])).all())
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -134,7 +130,8 @@ class TestDataset(TestCase):
         self.assertTrue((batch.label.unique().numpy() == 0).all())
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -161,7 +158,8 @@ class TestDataset(TestCase):
         self.check_batch(batch, batch_size, num_timesteps, num_outputs=num_outputs)
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],

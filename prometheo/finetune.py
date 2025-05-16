@@ -6,10 +6,10 @@ from typing import Union
 import torch
 from loguru import logger
 from torch.optim import AdamW, lr_scheduler
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from prometheo.predictors import NODATAVALUE
+from prometheo.predictors import NODATAVALUE, Predictors
 from prometheo.utils import (  # config_dir,; data_dir,; default_model_path,
     DEFAULT_SEED,
     device,
@@ -62,6 +62,8 @@ def _train_loop(
     """
     train_loss = []
     val_loss = []
+    val_acc = []
+    val_f1 = []
     best_loss = None
     best_model_dict = None
     epochs_since_improvement = 0
@@ -72,11 +74,30 @@ def _train_loop(
 
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
+
+            batch = batch.move_predictors_to_device(device)
+            assert isinstance(batch, Predictors)
+
             preds = model(batch)
-            targets = batch.label.to(device).float()
+            if not isinstance(batch.label, torch.Tensor):
+                raise ValueError(
+                    "Predictors.label must be a torch.Tensor during training"
+                )
+
+            targets = batch.label.to(device)
+            if preds.dim() > 1 and preds.size(-1) > 1:
+                # multiclass case: targets should be class indices
+                # predictions are multiclass logits
+                targets = targets.long().squeeze(axis=-1)
+            else:
+                # binary case
+                targets = targets.float()
+
+            # Compute loss
             loss = loss_fn(
                 preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
             )
+
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -88,14 +109,59 @@ def _train_loop(
 
         for batch in val_dl:
             with torch.no_grad():
+                batch = batch.move_predictors_to_device(device)
+                assert isinstance(batch, Predictors)
                 preds = model(batch)
-                targets = batch.label.to(device).float()
+
+                if not isinstance(batch.label, torch.Tensor):
+                    raise ValueError(
+                        "Predictors.label must be a torch.Tensor during training"
+                    )
+
+                targets = batch.label.to(device)
+
+                if preds.dim() > 1 and preds.size(-1) > 1:
+                    # multiclass case: targets should be class indices
+                    # predictions are multiclass logits
+                    targets = targets.long().squeeze(axis=-1)
+                else:
+                    # binary case
+                    targets = targets.float()
+
                 preds = preds[targets != NODATAVALUE]
                 targets = targets[targets != NODATAVALUE]
                 all_preds.append(preds)
                 all_y.append(targets)
 
-        val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
+        # val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))  # Duplicate??
+
+        # --- compute validation loss + metrics ---
+        from sklearn.metrics import f1_score
+
+        val_preds = torch.cat(all_preds)
+        val_targets = torch.cat(all_y)
+        current_val_loss = loss_fn(val_preds, val_targets).item()
+        val_loss.append(current_val_loss)
+
+        # derive discrete predictions & true labels
+        if val_preds.dim() > 1 and val_preds.size(-1) > 1:
+            # multiclass
+            pred_labels = val_preds.argmax(dim=-1).cpu()
+            true_labels = val_targets.cpu()
+        else:
+            # binary
+            # TODO: what if this is regression?
+            probs = torch.sigmoid(val_preds).cpu()
+            pred_labels = probs.gt(0.5).long().squeeze(-1)
+            true_labels = val_targets.cpu()
+
+        # accuracy & # macro F1
+        current_val_acc = pred_labels.eq(true_labels).float().mean().item()
+        current_val_f1 = f1_score(
+            true_labels.numpy(), pred_labels.numpy(), average="macro", zero_division=0
+        )
+        val_acc.append(current_val_acc)
+        val_f1.append(current_val_f1)
 
         if best_loss is None:
             best_loss = val_loss[-1]
@@ -112,9 +178,12 @@ def _train_loop(
                     break
 
         description = (
-            f"Train metric: {train_loss[-1]:.3f},"
-            f" Val metric: {val_loss[-1]:.3f},"
-            f" Best Val Loss: {best_loss:.3f}"
+            f"Epoch {epoch + 1}/{hyperparams.max_epochs} | "
+            f"Train Loss: {train_loss[-1]:.4f} | "
+            f"Val Loss: {current_val_loss:.4f} | "
+            f"Val Acc: {current_val_acc:.3f} | "
+            f"Val Macro F1: {current_val_f1:.3f} | "
+            f"Best Loss: {best_loss:.4f}"
         )
 
         if epochs_since_improvement > 0:
@@ -123,6 +192,7 @@ def _train_loop(
             description += " (improved)"
 
         pbar.set_description(description)
+        pbar.set_postfix(lr=scheduler.get_last_lr()[0])
         logger.info(
             f"PROGRESS after Epoch {epoch + 1}/{hyperparams.max_epochs}: {description}"
         )  # Only log to file if console filters on "PROGRESS"
@@ -173,8 +243,8 @@ def _setup(output_dir: Path, experiment_name: Union[str, Path], setup_logging: b
 
 def run_finetuning(
     model: torch.nn.Module,
-    train_ds: Dataset,
-    val_ds: Dataset,
+    train_dl: DataLoader,
+    val_dl: DataLoader,
     experiment_name: str,
     output_dir: Union[Path, str],
     loss_fn: torch.nn.Module,
@@ -190,10 +260,10 @@ def run_finetuning(
     ----------
     model : torch.nn.Module
         The model to be finetuned.
-    train_ds : Dataset
-        The training dataset.
-    val_ds : Dataset
-        The validation dataset.
+    train_ds : DataLoader
+        The training dataloader.
+    val_ds : DataLoader
+        The validation dataloader.
     experiment_name : str
         The name of the experiment.
     output_dir : Union[Path, str]
@@ -210,7 +280,6 @@ def run_finetuning(
         The random seed for reproducibility. Default is DEFAULT_SEED.
     setup_logging : bool, optional
         Whether to set up logging for the finetuning process. Default is True.
-
     Returns
     -------
     torch.nn.Module
@@ -243,25 +312,6 @@ def run_finetuning(
 
     # Move model to device
     model.to(device)
-
-    # Setup dataloaders
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=True,
-        num_workers=hyperparams.num_workers,
-        generator=generator,
-    )
-
-    val_dl = DataLoader(
-        val_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=False,
-        num_workers=hyperparams.num_workers,
-    )
 
     # Run the finetuning loop
     finetuned_model = _train_loop(

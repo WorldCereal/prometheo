@@ -1,18 +1,12 @@
 from datetime import datetime
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
 from torch.utils.data import Dataset
 
-from prometheo.predictors import (
-    DEM_BANDS,
-    METEO_BANDS,
-    NODATAVALUE,
-    S1_BANDS,
-    S2_BANDS,
-    Predictors,
-)
+from prometheo.predictors import (DEM_BANDS, METEO_BANDS, NODATAVALUE,
+                                  S1_BANDS, S2_BANDS, Predictors)
 
 
 class WorldCerealDataset(Dataset):
@@ -339,11 +333,12 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         """
 
         label = self.initialize_label()
+        valid_idx: Union[int, np.ndarray]
         if not self.time_explicit:
             # We have only one label for the whole sequence
             valid_idx = 0
         else:
-            valid_idx = valid_position or np.arange(self.num_timesteps)
+            valid_idx = valid_position if valid_position is not None else np.arange(self.num_timesteps)
 
         if task_type == "cropland":
             label[0, 0, valid_idx, :] = int(row_d["LANDCOVER_LABEL"] == 11)
