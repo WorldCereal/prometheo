@@ -6,7 +6,9 @@ from torch.utils.data import DataLoader
 
 from prometheo.datasets import ScaleAgDataset
 from prometheo.models import Presto
-from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, collate_fn
+from prometheo.predictors import (DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS,
+                                  collate_fn)
+from prometheo.utils import device
 
 models_to_test = [Presto]
 
@@ -64,7 +66,8 @@ class TestDataset(TestCase):
         self.check_batch(batch, batch_size, 12)
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -83,7 +86,8 @@ class TestDataset(TestCase):
         self.check_batch(batch, batch_size, num_timesteps)
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -111,7 +115,8 @@ class TestDataset(TestCase):
         self.assertTrue((batch.label.unique().numpy() == [0, 1]).all())
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -180,7 +185,8 @@ class TestDataset(TestCase):
         self.check_batch(batch, batch_size, num_timesteps, num_outputs=1)
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
@@ -224,7 +230,8 @@ class TestDataset(TestCase):
             )
 
         for model_cls in models_to_test:
-            model = model_cls()
+            model = model_cls().to(device)
+            batch = batch.move_predictors_to_device(device)
             output = model(batch)
             self.assertEqual(
                 output.shape[0],
