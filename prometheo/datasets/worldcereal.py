@@ -1,12 +1,20 @@
+import functools
 from datetime import datetime
-from typing import Dict, List, Literal, Optional, Tuple, Callable
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from torch.utils.data import Dataset
-import xarray as xr
 import torch
+import xarray as xr
+from einops import rearrange
+from pyproj import Transformer
 from torch import nn
+from torch.utils.data import Dataset
+
+from prometheo.infer import extract_features_from_model
+from prometheo.models import Presto
+from prometheo.models.pooling import PoolingMethods
+from prometheo.models.presto.wrapper import load_presto_weights
 from prometheo.predictors import (
     DEM_BANDS,
     METEO_BANDS,
@@ -15,12 +23,6 @@ from prometheo.predictors import (
     S2_BANDS,
     Predictors,
 )
-from prometheo.models import Presto
-from prometheo.models.pooling import PoolingMethods
-from prometheo.infer import extract_features_from_model
-import functools
-from einops import rearrange
-from pyproj import Transformer
 
 
 class WorldCerealDataset(Dataset):
@@ -120,9 +122,9 @@ class WorldCerealDataset(Dataset):
             )
 
         # Sanity check to make sure valid_position is still within the extracted timesteps
-        assert (
-            valid_position in timestep_positions
-        ), f"Valid position {valid_position} not in timestep positions {timestep_positions}"
+        assert valid_position in timestep_positions, (
+            f"Valid position {valid_position} not in timestep positions {timestep_positions}"
+        )
 
         return timestep_positions, valid_position
 
@@ -516,18 +518,99 @@ def _dekad_startdate_from_date(dt_in):
     return startdate
 
 
-def _predictor_from_xarray(x: xr.DataArray, epsg: int) -> Predictors:
-    # extract the latlons
+def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
+    def _get_timestamps() -> np.ndarray:
+        timestamps = arr.t.values
+        years = timestamps.astype("datetime64[Y]").astype(int) + 1970
+        months = timestamps.astype("datetime64[M]").astype(int) % 12 + 1
+        days = timestamps.astype("datetime64[D]").astype("datetime64[M]")
+        days = (timestamps - days).astype(int) + 1
+
+        components = np.stack(
+            [
+                days,
+                months,
+                years,
+            ],
+            axis=1,
+        )
+
+        return np.tile(components[None, ...], (arr.x.size * arr.y.size, 1, 1))
+
+    def _initialize_eo_inputs():
+        num_timesteps = arr.t.size
+        num_pixels = arr.x.size * arr.y.size
+        s1 = np.full(
+            (num_pixels, 1, 1, num_timesteps, len(S1_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [B, H, W, T, len(S1_BANDS)]
+        s2 = np.full(
+            (num_pixels, 1, 1, num_timesteps, len(S2_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [B, H, W, T, len(S2_BANDS)]
+        meteo = np.full(
+            (num_pixels, num_timesteps, len(METEO_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [B, T, len(METEO_BANDS)]
+        dem = np.full(
+            (num_pixels, 1, 1, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32
+        )  # [B, H, W, len(DEM_BANDS)]
+
+        return s1, s2, meteo, dem
+
+    # TODO: remove temporary band renaming due to old data file
+    arr["bands"] = arr.bands.where(arr.bands != "temperature_2m", "temperature")
+    arr["bands"] = arr.bands.where(arr.bands != "total_precipitation", "precipitation")
+
+    # Initialize EO inputs
+    s1, s2, meteo, dem = _initialize_eo_inputs()
+
+    # Fill EO inputs
+    for band in S2_BANDS + S1_BANDS + METEO_BANDS + DEM_BANDS:
+        if band not in arr.bands.values:
+            print(f"Band {band} not found in the input data, skipping.")
+            continue  # skip bands that are not present in the data
+        values = arr.sel(bands=band).values
+        idx_valid = values != NODATAVALUE
+        if band in S2_BANDS:
+            s2[..., S2_BANDS.index(band)] = rearrange(values, "t x y -> (x y) 1 1 t")
+        elif band in S1_BANDS:
+            # convert to dB
+            idx_valid = idx_valid & (values > 0)
+            values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
+            s1[..., S1_BANDS.index(band)] = rearrange(values, "t x y -> (x y) 1 1 t")
+        elif band == "precipitation":
+            # scaling, and AgERA5 is in mm, prometheo convention expects m
+            values[idx_valid] = values[idx_valid] / (100 * 1000.0)
+            meteo[..., METEO_BANDS.index(band)] = rearrange(values, "t x y -> (x y) t")
+        elif band == "temperature":
+            # remove scaling
+            values[idx_valid] = values[idx_valid] / 100
+            meteo[..., METEO_BANDS.index(band)] = rearrange(values, "t x y -> (x y) t")
+        elif band in DEM_BANDS:
+            values = values[0]  # dem is not temporal
+            dem[..., DEM_BANDS.index(band)] = rearrange(values, "x y -> (x y) 1 1")
+        else:
+            raise ValueError(f"Unknown band {band}")
+
+    # Extract the latlons
     # EPSG:4326 is the supported crs for presto
     transformer = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
-    x, y = np.meshgrid(x.x, x.y)
+    x, y = np.meshgrid(arr.x, arr.y)
     lon, lat = transformer.transform(x, y)
 
     predictors_dict = {
-        # 2D array where each row represents a pair of latitude and longitude coordinates.
-        "latlon": rearrange(np.stack([lat, lon]), "c x y -> (x y) c")
+        "s1": s1,
+        "s2": s2,
+        "meteo": meteo,
+        "latlon": rearrange(np.stack([lat, lon]), "c x y -> (x y) c"),
+        "dem": dem,
+        "timestamps": _get_timestamps(),
     }
-    # todo - eo data
+
     return Predictors(**predictors_dict)
 
 
@@ -585,23 +668,31 @@ def get_presto_features(
     """
 
     # Load the model
-    presto_model = Presto(pretrained_model_path=presto_url)
+    presto_model = Presto()
+    presto_model = load_presto_weights(presto_model, presto_url)
+
     # Compile for optimized inference. Note that warmup takes some time
     # so this is only recommended for larger inference jobs
     if compile:
-        presto_model.encoder = compile_encoder(presto_model.encoder)
+        presto_model.encoder = compile_encoder(presto_model.encoder)  # type: ignore
 
     predictor = generate_predictor(inarr, epsg)
     # fixing the pooling method to keep the function signature the same
     # as in presto-worldcereal but this could be an input argument too
-    features = extract_features_from_model(presto_model, predictor, batch_size, PoolingMethods.GLOBAL)
+    features = extract_features_from_model(
+        presto_model, predictor, batch_size, PoolingMethods.GLOBAL
+    )
 
     # todo - return the output tensors to the right shape, either xarray or df
     if isinstance(inarr, pd.DataFrame):
         return features
     else:
-        features = features(features, "(x y) c -> x y c", x=len(inarr.x), y=len(inarr.y))
-        ft_names = [f"presto_ft_{i}" for i in range(presto_model.encoder.embedding_size)]
+        features = rearrange(
+            features, "(x y) 1 1 1 c -> x y c", x=len(inarr.x), y=len(inarr.y)
+        )
+        ft_names = [
+            f"presto_ft_{i}" for i in range(presto_model.encoder.embedding_size)
+        ]
         features_da = xr.DataArray(
             features,
             dims=["x", "y", "bands"],
