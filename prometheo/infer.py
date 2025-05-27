@@ -11,6 +11,10 @@ def extract_features_from_model(
     pooling: PoolingMethods,
 ) -> torch.Tensor:
     model_features: list[torch.Tensor] = []
-    for batch in x.as_batches(batch_size):
-        model_features.append(model(batch, pooling))
+
+    # Ensure model is in evaluation mode
+    model.eval()
+    with torch.no_grad():
+        for batch in x.as_batches(batch_size):
+            model_features.append(model(batch, pooling))
     return torch.concat(model_features, dim=0)
