@@ -1,9 +1,8 @@
-from typing import NamedTuple, Optional, Union, Sequence
+from typing import Generator, NamedTuple, Optional, Sequence, Union
 
 import numpy as np
 import torch
 from torch.utils.data import default_collate
-from typing import Generator
 
 from prometheo.utils import device
 
@@ -78,11 +77,11 @@ class Predictors(NamedTuple):
     def as_batches(self, batch_size: int) -> Generator["Predictors", None, None]:
         cur_idx = 0
         predictor_as_dict = self.as_dict()
-        while cur_idx + batch_size < self.B:
+        while cur_idx < self.B:
             yield Predictors(
                 **{
                     key: val[cur_idx : cur_idx + batch_size]
-                    for key, val in predictor_as_dict
+                    for key, val in predictor_as_dict.items()
                 }
             )
             cur_idx += batch_size
