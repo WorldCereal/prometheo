@@ -2,6 +2,7 @@ from unittest import TestCase
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from resources import load_dataframe
 from torch.utils.data import DataLoader
 
@@ -9,6 +10,7 @@ from prometheo.datasets import WorldCerealDataset, WorldCerealLabelledDataset
 from prometheo.datasets.worldcereal import (
     get_dekad_timestamp_components,
     get_monthly_timestamp_components,
+    get_presto_features,
 )
 from prometheo.models import Presto
 from prometheo.predictors import (
@@ -19,6 +21,7 @@ from prometheo.predictors import (
     S2_BANDS,
     collate_fn,
 )
+from prometheo.utils import data_dir
 
 models_to_test = [Presto]
 
@@ -243,3 +246,33 @@ class TestDataset(TestCase):
                 timestamps[:, 2] == [2020 for _ in range(5)] + [2021 for _ in range(7)]
             ).all()
         )
+
+
+class TestInference(TestCase):
+    def test_get_presto_features(self):
+        """Test the get_presto_features function. Based on ref features
+        generated using this method.
+        """
+        arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
+
+        model_url = str(data_dir / "finetuned_presto_model.pt")
+        presto_features = get_presto_features(
+            arr, model_url, batch_size=512, epsg=32631
+        )
+
+        # Uncomment to regenerate ref features
+        # presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
+
+        # Load ref features
+        ref_presto_features = xr.open_dataarray(
+            data_dir / "test_presto_inference_features.nc"
+        )
+
+        xr.testing.assert_allclose(
+            presto_features,
+            ref_presto_features,
+            rtol=1e-04,
+            atol=1e-04,
+        )
+
+        assert presto_features.dims == ref_presto_features.dims
