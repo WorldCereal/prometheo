@@ -209,7 +209,7 @@ def dataset_to_model(x: Predictors):
     dynamic_world = np.ones((batch_size, h, w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
     # todo : flatten , and add h w to meteo
-    # and labels
+    # and labels and latlon and timesteps (which now need b * h * w shape)
 
     output, mask = normalize(output, mask)
     return output, mask, dynamic_world
