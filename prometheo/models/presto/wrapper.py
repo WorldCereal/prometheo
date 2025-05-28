@@ -149,27 +149,32 @@ def normalize(x: np.ndarray, mask: np.ndarray):
 def dataset_to_model(x: Predictors):
     batch_sizes = [v.shape[0] for v in [x.s1, x.s2, x.meteo, x.dem] if v is not None]
     timesteps = [v.shape[-2] for v in [x.s1, x.s2, x.meteo] if v is not None]
+    hs = [v.shape[1] for v in [x.s1, x.s2, x.dem] if v is not None]
+    ws = [v.shape[2] for v in [x.s1, x.s2, x.dem] if v is not None]
     if len(timesteps) == 0:
         raise ValueError("One of s1, s2, meteo must be not None")
-    if not all(v == batch_sizes[0] for v in batch_sizes):
+    if len(hs) == 0:
+        raise ValueError("One of s1, s2, dem must be not None")
+    if not len(set(batch_sizes)) == 1:
         raise ValueError("dim 0 (batch size) must be consistent for s1, s2, dem, meteo")
-    if not all(v == timesteps[0] for v in timesteps):
+    if not len(set(timesteps)) == 1:
         raise ValueError("dim -2 (timesteps) must be consistent for s1, s2, meteo")
+    if not len(set(hs)) == 1:
+        raise ValueError("dim 1 (height) must be consistent for s1, s2, dem")
+    h = hs[0]
+    if not len(set(ws)) == 1:
+        raise ValueError("dim 2 (width) must be consistent for s1, s2, dem")
+    w = ws[0]
 
     batch_size, timesteps = batch_sizes[0], timesteps[0]
     total_bands = sum([len(v) for _, v in BANDS_GROUPS_IDX.items()])
 
     mask, output = (
-        np.ones((batch_size, timesteps, total_bands)),
-        np.zeros((batch_size, timesteps, total_bands)),
+        np.ones((batch_size, h, w, timesteps, total_bands)),
+        np.zeros((batch_size, h, w, timesteps, total_bands)),
     )
 
-    hs, ws = [], []
-
     if x.s1 is not None:
-        s1_h, s1_w = x.s1.shape[1], x.s1.shape[2]
-        hs.append(s1_h)
-        ws.append(s1_w)
         # for some reason, doing
         # x.s1[ :, 0, 0, :, mapper["S1"]["predictor"]]
         # directly yields an array of shape [bands, batch_size, timesteps]
@@ -180,16 +185,20 @@ def dataset_to_model(x: Predictors):
         mask[:, :, :, :, mapper["S1"]["presto"]] = s1_hw_bands == NODATAVALUE
 
     if x.s2 is not None:
-        s2_h, s2_w = x.s2.shape[1], x.s2.shape[2]
-        hs.append(s2_h)
-        ws.append(s2_w)
-
         s2_hw = x.s2[:, :, :, :, :]
         s2_hw_bands = s2_hw[:, :, :, :, mapper["S2"]["predictor"]]
         output[:, :, :, :, mapper["S2"]["presto"]] = s2_hw_bands
         mask[:, :, :, :, mapper["S2"]["presto"]] = s2_hw_bands == NODATAVALUE
 
+    if x.dem is not None:
+        dem_with_time = repeat(
+            x.dem[:, :, :, mapper["dem"]["predictor"]], "b h w d -> b h w t d", t=timesteps
+        )
+        output[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time
+        mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
+
     if x.meteo is not None:
+        # todo - expand to the height and width dimensions
         output[:, :, mapper["meteo"]["presto"]] = x.meteo[
             :, :, mapper["meteo"]["predictor"]
         ]
@@ -197,23 +206,10 @@ def dataset_to_model(x: Predictors):
             x.meteo[:, :, mapper["meteo"]["predictor"]] == NODATAVALUE
         )
 
-    if x.dem is not None:
-        dem_h, dem_w = x.dem.shape[1], x.dem.shape[2]
-        hs.append(dem_h)
-        ws.append(dem_w)
-        dem_with_time = repeat(
-            x.dem[:, :, :, mapper["dem"]["predictor"]], "b h w d -> b h w t d", t=timesteps
-        )
-        output[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time
-        mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
+    dynamic_world = np.ones((batch_size, h, w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
-    dynamic_world = np.ones((batch_size, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
-
-    if len(set(hs)) != 1:
-        raise ValueError(f"Inconsistent heights in predictor, got {hs}")
-    if len(set(ws)) != 1:
-        raise ValueError(f"Inconsistent widths in predictor, got {ws}")
-    # todo : flatten , and add h w to dynamic world and meteo
+    # todo : flatten , and add h w to meteo
+    # and labels
 
     output, mask = normalize(output, mask)
     return output, mask, dynamic_world
