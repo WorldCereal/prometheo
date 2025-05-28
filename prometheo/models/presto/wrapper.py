@@ -7,7 +7,7 @@ from typing import Literal, Optional, Union
 import numpy as np
 import requests
 import torch
-from einops import repeat
+from einops import repeat, rearrange
 from torch import nn
 
 from prometheo.predictors import (
@@ -18,6 +18,7 @@ from prometheo.predictors import (
     S2_BANDS,
     Predictors,
     to_torchtensor,
+    ArrayTensor
 )
 from prometheo.utils import device
 
@@ -205,13 +206,25 @@ def dataset_to_model(x: Predictors):
         output[:, :, mapper["meteo"]["presto"]] = meteo_with_hw
         mask[:, :, mapper["meteo"]["presto"]] = (meteo_with_hw == NODATAVALUE)
 
-    dynamic_world = np.ones((batch_size, h, w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
+    dynamic_world = np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
     # todo : flatten
-    # and labels and latlon and timesteps (which now need b * h * w shape)
+    latlon: ArrayTensor | None = None
+    if x.latlon is not None:
+        latlon = repeat(x.latlon, "b d -> b h w d", h=h, w=w)
+        latlon = rearrange(latlon, "b h w d -> (b h w) d")
+
+
+    timestamps: ArrayTensor | None = None
+    if x.timestamps is not None:
+        timestamps = repeat(x.timestamps, "b t d -> b h w t d", h=h, w=w)
+        timestamps = rearrange(latlon, "b h w t d -> (b h w) t d")
+
+    output = rearrange(output, "b h w t d -> (b h w) t d")
+    mask = rearrange(mask, "b h w t d -> (b h w) t d")
 
     output, mask = normalize(output, mask)
-    return output, mask, dynamic_world
+    return output, mask, dynamic_world, latlon, timestamps, h, w
 
 
 @lru_cache(maxsize=6)
@@ -353,7 +366,7 @@ class PretrainedPrestoWrapper(nn.Module):
 
         """
 
-        s1_s2_era5_srtm, mask, dynamic_world = dataset_to_model(x)
+        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w= dataset_to_model(x)
 
         # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
@@ -372,21 +385,22 @@ class PretrainedPrestoWrapper(nn.Module):
         embeddings = self.encoder(
             x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
             dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
-            latlons=to_torchtensor(x.latlon, device=device).float(),
+            latlons=to_torchtensor(latlon).float(),
             mask=to_torchtensor(mask, device=device).long(),
             # presto wants 0 indexed months, not 1 indexed months
-            month=to_torchtensor(x.timestamps[:, :, 1] - 1, device=device),
+            month=to_torchtensor(timestamps[:, :, 1] - 1, device=device),
             eval_pooling=eval_pooling,
         )
 
         # Need to reintroduce spatial and temporal dims according to prometheo convention
+        b = embeddings.shape[0] / (h * w)
         if eval_pooling == "global":
-            embeddings = embeddings.reshape((-1, 1, 1, 1, embeddings.shape[-1]))
+            embeddings = rearrange(embeddings, "(b h w) d -> b h w t d", b=b, h=h, w=w, t=1)
         elif eval_pooling == "time":
-            embeddings = embeddings.reshape(
-                (-1, 1, 1, x.timestamps.shape[1], embeddings.shape[-1])
-            )
+            embeddings = rearrange(embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w, t=1)
         else:
+            if ((h != 1)) or ((w != 1)):
+                raise ValueError("h w != 1 unsupported for SSL")
             pass  # In case of no pooling we assume SSL and don't change embeddings
 
         if self.head is not None:
