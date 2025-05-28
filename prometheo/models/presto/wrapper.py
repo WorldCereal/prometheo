@@ -199,16 +199,15 @@ def dataset_to_model(x: Predictors):
 
     if x.meteo is not None:
         # todo - expand to the height and width dimensions
-        output[:, :, mapper["meteo"]["presto"]] = x.meteo[
-            :, :, mapper["meteo"]["predictor"]
-        ]
-        mask[:, :, mapper["meteo"]["presto"]] = (
-            x.meteo[:, :, mapper["meteo"]["predictor"]] == NODATAVALUE
+        meteo_with_hw = repeat(
+            x.meteo[:, :, mapper["meteo"]["predictor"]], "b t d -> b h w t d", h=h, w=w
         )
+        output[:, :, mapper["meteo"]["presto"]] = meteo_with_hw
+        mask[:, :, mapper["meteo"]["presto"]] = (meteo_with_hw == NODATAVALUE)
 
     dynamic_world = np.ones((batch_size, h, w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
-    # todo : flatten , and add h w to meteo
+    # todo : flatten
     # and labels and latlon and timesteps (which now need b * h * w shape)
 
     output, mask = normalize(output, mask)
