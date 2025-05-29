@@ -203,8 +203,8 @@ def dataset_to_model(x: Predictors):
         meteo_with_hw = repeat(
             x.meteo[:, :, mapper["meteo"]["predictor"]], "b t d -> b h w t d", h=h, w=w
         )
-        output[:, :, mapper["meteo"]["presto"]] = meteo_with_hw
-        mask[:, :, mapper["meteo"]["presto"]] = (meteo_with_hw == NODATAVALUE)
+        output[:, :, :, :, mapper["meteo"]["presto"]] = meteo_with_hw
+        mask[:, :, :, :, mapper["meteo"]["presto"]] = (meteo_with_hw == NODATAVALUE)
 
     dynamic_world = np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
@@ -218,7 +218,7 @@ def dataset_to_model(x: Predictors):
     timestamps: ArrayTensor | None = None
     if x.timestamps is not None:
         timestamps = repeat(x.timestamps, "b t d -> b h w t d", h=h, w=w)
-        timestamps = rearrange(latlon, "b h w t d -> (b h w) t d")
+        timestamps = rearrange(timestamps, "b h w t d -> (b h w) t d")
 
     output = rearrange(output, "b h w t d -> (b h w) t d")
     mask = rearrange(mask, "b h w t d -> (b h w) t d")
@@ -393,11 +393,14 @@ class PretrainedPrestoWrapper(nn.Module):
         )
 
         # Need to reintroduce spatial and temporal dims according to prometheo convention
-        b = embeddings.shape[0] / (h * w)
         if eval_pooling == "global":
-            embeddings = rearrange(embeddings, "(b h w) d -> b h w t d", b=b, h=h, w=w, t=1)
+            b = int(embeddings.shape[0] / (h * w))
+            embeddings = rearrange(embeddings, "(b h w) d -> b h w d", b=b, h=h, w=w)
+            # add the time dimension back
+            embeddings = torch.unsqueeze(embeddings, 3)
         elif eval_pooling == "time":
-            embeddings = rearrange(embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w, t=1)
+            b = int(embeddings.shape[0] / (h * w))
+            embeddings = rearrange(embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w)
         else:
             if ((h != 1)) or ((w != 1)):
                 raise ValueError("h w != 1 unsupported for SSL")
