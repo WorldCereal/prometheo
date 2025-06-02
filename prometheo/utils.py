@@ -5,8 +5,8 @@ from typing import Optional, Union
 import torch
 from loguru import logger
 
+data_dir = Path(__file__).parent / "data"
 DEFAULT_SEED: int = 42
-
 
 if not torch.cuda.is_available():
     device = torch.device("cpu")
