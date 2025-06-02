@@ -240,6 +240,7 @@ def load_presto_weights(
     FileNotFoundError
         If the specified model path does not exist.
     """
+    presto_model.to(device)
     if isinstance(weights_path, str) and (weights_path.startswith("http")):
         response = requests.get(weights_path)
         presto_model_layers = torch.load(
