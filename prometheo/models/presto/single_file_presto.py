@@ -259,10 +259,7 @@ def get_sinusoid_encoding_table(positions, d_hid, T=1000):
     sinusoid_table[:, 0::2] = np.sin(sinusoid_table[:, 0::2])  # dim 2i
     sinusoid_table[:, 1::2] = np.cos(sinusoid_table[:, 1::2])  # dim 2i+1
 
-    if torch.cuda.is_available():
-        return torch.FloatTensor(sinusoid_table).cuda()
-    else:
-        return torch.FloatTensor(sinusoid_table)
+    return torch.FloatTensor(sinusoid_table)
 
 
 def get_month_encoding_table(d_hid):
