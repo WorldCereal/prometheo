@@ -199,7 +199,6 @@ def dataset_to_model(x: Predictors):
         mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
 
     if x.meteo is not None:
-        # todo - expand to the height and width dimensions
         meteo_with_hw = repeat(
             x.meteo[:, :, mapper["meteo"]["predictor"]], "b t d -> b h w t d", h=h, w=w
         )
@@ -208,7 +207,6 @@ def dataset_to_model(x: Predictors):
 
     dynamic_world = np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
-    # todo : flatten
     latlon: ArrayTensor | None = None
     if x.latlon is not None:
         latlon = repeat(x.latlon, "b d -> b h w d", h=h, w=w)
