@@ -289,6 +289,7 @@ class ScaleAgDataset(Dataset):
         time_dim = 1
         valid_idx = valid_positions or np.arange(time_dim)
 
+        assert self.num_outputs is not None, "num_outputs must be set"
         labels = np.full(
             (1, 1, time_dim, self.num_outputs),
             fill_value=NODATAVALUE,
@@ -310,8 +311,6 @@ class ScaleAgDataset(Dataset):
         # convert classes to indices for multiclass
         elif self.task_type == "multiclass":
             target = self.class_to_index[target]
-            if target.size > 1:
-                target = target.to_numpy()
         labels[0, 0, valid_idx, :] = target
         return labels
 
