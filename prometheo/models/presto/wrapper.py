@@ -254,6 +254,7 @@ def load_presto_weights(
     FileNotFoundError
         If the specified model path does not exist.
     """
+    presto_model.to(device)
     if isinstance(weights_path, str) and (weights_path.startswith("http")):
         response = requests.get(weights_path)
         presto_model_layers = torch.load(
@@ -380,13 +381,14 @@ class PretrainedPrestoWrapper(nn.Module):
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
 
+        model_device = self.encoder.pos_embed.device
         embeddings = self.encoder(
-            x=to_torchtensor(s1_s2_era5_srtm, device=device).float(),
-            dynamic_world=to_torchtensor(dynamic_world, device=device).long(),
-            latlons=to_torchtensor(latlon).float(),
-            mask=to_torchtensor(mask, device=device).long(),
+            x=to_torchtensor(s1_s2_era5_srtm, device=model_device).float(),
+            dynamic_world=to_torchtensor(dynamic_world, device=model_device).long(),
+            latlons=to_torchtensor(latlon, device=model_device).float(),
+            mask=to_torchtensor(mask, device=model_device).long(),
             # presto wants 0 indexed months, not 1 indexed months
-            month=to_torchtensor(timestamps[:, :, 1] - 1, device=device),
+            month=to_torchtensor(timestamps[:, :, 1] - 1, device=model_device),
             eval_pooling=eval_pooling,
         )
 
