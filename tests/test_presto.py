@@ -4,8 +4,8 @@ import numpy as np
 import torch
 from einops import repeat
 
-from prometheo.models.pooling import PoolingMethods
 from prometheo.models import Presto
+from prometheo.models.pooling import PoolingMethods
 from prometheo.predictors import DEM_BANDS, METEO_BANDS, S1_BANDS, S2_BANDS, Predictors
 
 
@@ -122,10 +122,11 @@ class TestPresto(unittest.TestCase):
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
-        output_embeddings = model(x, eval_pooling="global")
+        output_embeddings = model(x, eval_pooling=PoolingMethods.GLOBAL)
         self.assertEqual(
             # t = 1 since we do global pooling
-            output_embeddings.shape, (b, h, w, 1, model.encoder.embedding_size)
+            output_embeddings.shape,
+            (b, h, w, 1, model.encoder.embedding_size),
         )
 
     def test_forward_from_predictor_hw_time(self):
@@ -141,7 +142,7 @@ class TestPresto(unittest.TestCase):
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
-        output_embeddings = model(x, eval_pooling="time")
+        output_embeddings = model(x, eval_pooling=PoolingMethods.TIME)
         self.assertEqual(
             output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size)
         )
