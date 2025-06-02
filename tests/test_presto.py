@@ -107,3 +107,40 @@ class TestPresto(unittest.TestCase):
         self.assertEqual(
             output_embeddings[0].shape, (b, 34, model.encoder.embedding_size)
         )
+
+    def test_forward_from_predictor_hw_global(self):
+        b, t, h, w = 8, 4, 2, 2
+
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
+        x = Predictors(
+            s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
+            s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
+            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            dem=np.random.rand(b, h, w, len(DEM_BANDS)),
+            latlon=np.random.rand(b, 2),
+            timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
+        )
+        model = Presto()
+        output_embeddings = model(x, eval_pooling="global")
+        self.assertEqual(
+            # t = 1 since we do global pooling
+            output_embeddings.shape, (b, h, w, 1, model.encoder.embedding_size)
+        )
+
+    def test_forward_from_predictor_hw_time(self):
+        b, t, h, w = 8, 4, 2, 2
+
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
+        x = Predictors(
+            s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
+            s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
+            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            dem=np.random.rand(b, h, w, len(DEM_BANDS)),
+            latlon=np.random.rand(b, 2),
+            timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
+        )
+        model = Presto()
+        output_embeddings = model(x, eval_pooling="time")
+        self.assertEqual(
+            output_embeddings.shape, (b, h, w, t, model.encoder.embedding_size)
+        )
