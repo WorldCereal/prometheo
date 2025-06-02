@@ -274,10 +274,7 @@ def get_month_encoding_table(d_hid):
     cos_table = np.cos(np.stack([angles for _ in range(d_hid // 2)], axis=-1))
     month_table = np.concatenate([sin_table[:-1], cos_table[:-1]], axis=-1)
 
-    if torch.cuda.is_available():
-        return torch.FloatTensor(month_table).cuda()
-    else:
-        return torch.FloatTensor(month_table)
+    return torch.FloatTensor(month_table)
 
 
 def month_to_tensor(
