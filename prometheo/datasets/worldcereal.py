@@ -12,9 +12,7 @@ from torch import nn
 from torch.utils.data import Dataset
 
 from prometheo.infer import extract_features_from_model
-from prometheo.models import Presto
 from prometheo.models.pooling import PoolingMethods
-from prometheo.models.presto.wrapper import load_presto_weights
 from prometheo.predictors import (
     DEM_BANDS,
     METEO_BANDS,
