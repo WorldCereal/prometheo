@@ -6,16 +6,11 @@ from typing import Union
 import torch
 from loguru import logger
 from torch.optim import AdamW, lr_scheduler
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from prometheo.predictors import NODATAVALUE
-from prometheo.utils import (  # config_dir,; data_dir,; default_model_path,
-    DEFAULT_SEED,
-    device,
-    initialize_logging,
-    seed_everything,
-)
+from prometheo.utils import DEFAULT_SEED, device, initialize_logging, seed_everything
 
 
 @dataclass
@@ -197,8 +192,8 @@ def _setup(output_dir: Path, experiment_name: Union[str, Path], setup_logging: b
 
 def run_finetuning(
     model: torch.nn.Module,
-    train_ds: Dataset,
-    val_ds: Dataset,
+    train_dl: DataLoader,
+    val_dl: DataLoader,
     experiment_name: str,
     output_dir: Union[Path, str],
     loss_fn: torch.nn.Module,
@@ -214,10 +209,10 @@ def run_finetuning(
     ----------
     model : torch.nn.Module
         The model to be finetuned.
-    train_ds : Dataset
-        The training dataset.
-    val_ds : Dataset
-        The validation dataset.
+    train_dl : DataLoader
+        The training dataloader.
+    val_dl : DataLoader
+        The validation dataloader.
     experiment_name : str
         The name of the experiment.
     output_dir : Union[Path, str]
@@ -234,7 +229,6 @@ def run_finetuning(
         The random seed for reproducibility. Default is DEFAULT_SEED.
     setup_logging : bool, optional
         Whether to set up logging for the finetuning process. Default is True.
-
     Returns
     -------
     torch.nn.Module
@@ -267,25 +261,6 @@ def run_finetuning(
 
     # Move model to device
     model.to(device)
-
-    # Setup dataloaders
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=True,
-        num_workers=hyperparams.num_workers,
-        generator=generator,
-    )
-
-    val_dl = DataLoader(
-        val_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=False,
-        num_workers=hyperparams.num_workers,
-    )
 
     # Run the finetuning loop
     finetuned_model = _train_loop(
