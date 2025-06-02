@@ -366,7 +366,7 @@ class PretrainedPrestoWrapper(nn.Module):
 
         """
 
-        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w= dataset_to_model(x)
+        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w = dataset_to_model(x)
 
         # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if

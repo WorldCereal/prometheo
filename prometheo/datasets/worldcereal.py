@@ -535,28 +535,28 @@ def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
             axis=1,
         )
 
-        return np.tile(components[None, ...], (arr.x.size * arr.y.size, 1, 1))
+        return components[None, ...]  # Add batch dimension
 
     def _initialize_eo_inputs():
         num_timesteps = arr.t.size
-        num_pixels = arr.x.size * arr.y.size
+        h, w = arr.y.size, arr.x.size
         s1 = np.full(
-            (num_pixels, 1, 1, num_timesteps, len(S1_BANDS)),
+            (1, h, w, num_timesteps, len(S1_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
         )  # [B, H, W, T, len(S1_BANDS)]
         s2 = np.full(
-            (num_pixels, 1, 1, num_timesteps, len(S2_BANDS)),
+            (1, h, w, num_timesteps, len(S2_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
         )  # [B, H, W, T, len(S2_BANDS)]
         meteo = np.full(
-            (num_pixels, num_timesteps, len(METEO_BANDS)),
+            (1, num_timesteps, len(METEO_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
         )  # [B, T, len(METEO_BANDS)]
         dem = np.full(
-            (num_pixels, 1, 1, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32
+            (1, h, w, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32
         )  # [B, H, W, len(DEM_BANDS)]
 
         return s1, s2, meteo, dem
@@ -576,23 +576,25 @@ def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
         values = arr.sel(bands=band).values
         idx_valid = values != NODATAVALUE
         if band in S2_BANDS:
-            s2[..., S2_BANDS.index(band)] = rearrange(values, "t x y -> (x y) 1 1 t")
+            s2[..., S2_BANDS.index(band)] = rearrange(
+                values, "t x y -> 1 y x t"
+            )  # TODO check if this is correct
         elif band in S1_BANDS:
             # convert to dB
             idx_valid = idx_valid & (values > 0)
             values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
-            s1[..., S1_BANDS.index(band)] = rearrange(values, "t x y -> (x y) 1 1 t")
+            s1[..., S1_BANDS.index(band)] = rearrange(values, "t x y -> 1 y x t")
         elif band == "precipitation":
             # scaling, and AgERA5 is in mm, prometheo convention expects m
             values[idx_valid] = values[idx_valid] / (100 * 1000.0)
-            meteo[..., METEO_BANDS.index(band)] = rearrange(values, "t x y -> (x y) t")
+            meteo[..., METEO_BANDS.index(band)] = rearrange(values[:, 0, 0], "t -> 1 t")
         elif band == "temperature":
             # remove scaling
             values[idx_valid] = values[idx_valid] / 100
-            meteo[..., METEO_BANDS.index(band)] = rearrange(values, "t x y -> (x y) t")
+            meteo[..., METEO_BANDS.index(band)] = rearrange(values[:, 0, 0], "t -> 1 t")
         elif band in DEM_BANDS:
             values = values[0]  # dem is not temporal
-            dem[..., DEM_BANDS.index(band)] = rearrange(values, "x y -> (x y) 1 1")
+            dem[..., DEM_BANDS.index(band)] = rearrange(values, "x y -> 1 y x")
         else:
             raise ValueError(f"Unknown band {band}")
 
@@ -606,7 +608,9 @@ def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
         "s1": s1,
         "s2": s2,
         "meteo": meteo,
-        "latlon": rearrange(np.stack([lat, lon]), "c x y -> (x y) c"),
+        "latlon": rearrange(
+            np.stack([lat, lon])[:, 0:1, 0:1], "c x y -> (x y) c", x=1, y=1
+        ),  # TODO make explicit once #36 is tackled
         "dem": dem,
         "timestamps": _get_timestamps(),
     }
@@ -646,41 +650,32 @@ def compile_encoder(presto_encoder: nn.Module) -> Callable:
     return presto_encoder
 
 
-def get_presto_features(
+def run_model_inference(
     inarr: pd.DataFrame | xr.DataArray,
-    presto_url: str,
+    model: nn.Module,  # Wrapper
     epsg: int = 4326,
     batch_size: int = 8192,
-    compile: bool = False,
 ) -> np.ndarray | xr.DataArray:
     """
-    Extracts features from input data using Presto.
+    Runs a forward pass of the model on the input data
 
     Args:
         inarr (xr.DataArray or pd.DataFrame): Input data as xarray DataArray or pandas DataFrame.
-        presto_url (str): URL to the pretrained Presto model.
+        model (nn.Module): A Prometheo compatible (wrapper) model.
         epsg (int) : EPSG code describing the coordinates.
         batch_size (int): Batch size to be used for Presto inference.
-        compile (bool): Whether to compile the model before extracting features.
 
     Returns:
-        xr.DataArray or np.ndarray: Extracted features as xarray DataArray or numpy ndarray.
+        xr.DataArray or np.ndarray: Model output as xarray DataArray or numpy ndarray.
     """
-
-    # Load the model
-    presto_model = Presto()
-    presto_model = load_presto_weights(presto_model, presto_url)
-
-    # Compile for optimized inference. Note that warmup takes some time
-    # so this is only recommended for larger inference jobs
-    if compile:
-        presto_model.encoder = compile_encoder(presto_model.encoder)  # type: ignore
 
     predictor = generate_predictor(inarr, epsg)
     # fixing the pooling method to keep the function signature the same
     # as in presto-worldcereal but this could be an input argument too
-    features = extract_features_from_model(
-        presto_model, predictor, batch_size, PoolingMethods.GLOBAL
+    features = (
+        extract_features_from_model(model, predictor, batch_size, PoolingMethods.GLOBAL)
+        .cpu()
+        .numpy()
     )
 
     # todo - return the output tensors to the right shape, either xarray or df
@@ -688,15 +683,12 @@ def get_presto_features(
         return features
     else:
         features = rearrange(
-            features, "(x y) 1 1 1 c -> x y c", x=len(inarr.x), y=len(inarr.y)
+            features, "1 y x 1 c -> x y c", x=len(inarr.x), y=len(inarr.y)
         )
-        ft_names = [
-            f"presto_ft_{i}" for i in range(presto_model.encoder.embedding_size)
-        ]
         features_da = xr.DataArray(
             features,
             dims=["x", "y", "bands"],
-            coords={"x": inarr.x, "y": inarr.y, "bands": ft_names},
+            coords={"x": inarr.x, "y": inarr.y},
         )
 
         return features_da

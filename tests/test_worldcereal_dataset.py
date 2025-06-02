@@ -10,9 +10,10 @@ from prometheo.datasets import WorldCerealDataset, WorldCerealLabelledDataset
 from prometheo.datasets.worldcereal import (
     get_dekad_timestamp_components,
     get_monthly_timestamp_components,
-    get_presto_features,
+    run_model_inference,
 )
 from prometheo.models import Presto
+from prometheo.models.presto.wrapper import load_presto_weights
 from prometheo.predictors import (
     DEM_BANDS,
     METEO_BANDS,
@@ -249,15 +250,19 @@ class TestDataset(TestCase):
 
 
 class TestInference(TestCase):
-    def test_get_presto_features(self):
-        """Test the get_presto_features function. Based on ref features
+    def test_run_model_inference(self):
+        """Test the run_model_inference function. Based on ref features
         generated using this method.
         """
         arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
 
+        # Load a pretrained Presto model
         model_url = str(data_dir / "finetuned_presto_model.pt")
-        presto_features = get_presto_features(
-            arr, model_url, batch_size=512, epsg=32631
+        presto_model = Presto()
+        presto_model = load_presto_weights(presto_model, model_url)
+
+        presto_features = run_model_inference(
+            arr, presto_model, batch_size=512, epsg=32631
         )
 
         # Uncomment to regenerate ref features
