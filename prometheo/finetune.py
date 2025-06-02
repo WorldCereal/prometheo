@@ -134,9 +134,10 @@ def _train_loop(
                     break
 
         description = (
-            f"Train metric: {train_loss[-1]:.3f},"
-            f" Val metric: {val_loss[-1]:.3f},"
-            f" Best Val Loss: {best_loss:.3f}"
+            f"Epoch {epoch + 1}/{hyperparams.max_epochs} | "
+            f"Train Loss: {train_loss[-1]:.4f} | "
+            f"Val Loss: {current_val_loss:.4f} | "
+            f"Best Loss: {best_loss:.4f}"
         )
 
         if epochs_since_improvement > 0:
@@ -145,6 +146,7 @@ def _train_loop(
             description += " (improved)"
 
         pbar.set_description(description)
+        pbar.set_postfix(lr=scheduler.get_last_lr()[0])
         logger.info(
             f"PROGRESS after Epoch {epoch + 1}/{hyperparams.max_epochs}: {description}"
         )  # Only log to file if console filters on "PROGRESS"
