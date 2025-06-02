@@ -68,7 +68,7 @@ def _train_loop(
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
             preds = model(batch)
-            targets = batch.label
+            targets = batch.label.to(device)
             if preds.dim() > 1 and preds.size(-1) > 1:
                 # multiclass case: targets should be class indices
                 # predictions are multiclass logits
@@ -94,7 +94,7 @@ def _train_loop(
         for batch in val_dl:
             with torch.no_grad():
                 preds = model(batch)
-                targets = batch.label
+                targets = batch.label.to(device)
 
                 if preds.dim() > 1 and preds.size(-1) > 1:
                     # multiclass case: targets should be class indices
