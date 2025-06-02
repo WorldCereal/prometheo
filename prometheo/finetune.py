@@ -73,10 +73,20 @@ def _train_loop(
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
             preds = model(batch)
-            targets = batch.label.to(device).float()
+            targets = batch.label
+            if preds.dim() > 1 and preds.size(-1) > 1:
+                # multiclass case: targets should be class indices
+                # predictions are multiclass logits
+                targets = targets.long().squeeze(axis=-1)
+            else:
+                # binary or regression case
+                targets = targets.float()
+
+            # Compute loss
             loss = loss_fn(
                 preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
             )
+
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -89,13 +99,25 @@ def _train_loop(
         for batch in val_dl:
             with torch.no_grad():
                 preds = model(batch)
-                targets = batch.label.to(device).float()
+                targets = batch.label
+
+                if preds.dim() > 1 and preds.size(-1) > 1:
+                    # multiclass case: targets should be class indices
+                    # predictions are multiclass logits
+                    targets = targets.long().squeeze(axis=-1)
+                else:
+                    # binary or regression case
+                    targets = targets.float()
+
                 preds = preds[targets != NODATAVALUE]
                 targets = targets[targets != NODATAVALUE]
                 all_preds.append(preds)
                 all_y.append(targets)
 
-        val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
+        val_preds = torch.cat(all_preds)
+        val_targets = torch.cat(all_y)
+        current_val_loss = loss_fn(val_preds, val_targets).item()
+        val_loss.append(current_val_loss)
 
         if best_loss is None:
             best_loss = val_loss[-1]
