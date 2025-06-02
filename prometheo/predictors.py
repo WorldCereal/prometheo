@@ -53,7 +53,7 @@ class Predictors(NamedTuple):
     # for now we ignore them
     # aux_inputs: Optional[List[ArrayTensor]] = None
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[ArrayTensor] = None  # [B, H, W, T, num_outputs]
+    label: Optional[ArrayTensor] = None  # [B, H, W, T, 1]
     timestamps: Optional[ArrayTensor] = None  # [B, T, D=3], where D=[day, month, year]
 
     def as_dict(self, ignore_nones: bool = True):
