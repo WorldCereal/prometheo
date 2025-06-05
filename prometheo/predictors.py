@@ -48,7 +48,7 @@ class Predictors(NamedTuple):
     s2: Optional[ArrayTensor] = None  # [B, H, W, T, len(S2_bands)]
     meteo: Optional[ArrayTensor] = None  # [B, T, len(meteo_bands)]
     dem: Optional[ArrayTensor] = None  # [B, H, W, len(dem)]
-    latlon: Optional[ArrayTensor] = None  # [B, 2]
+    latlon: Optional[ArrayTensor] = None  # [B, H, W, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
     # for now we ignore them
     # aux_inputs: Optional[List[ArrayTensor]] = None

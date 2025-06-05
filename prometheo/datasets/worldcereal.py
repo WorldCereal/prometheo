@@ -195,7 +195,7 @@ class WorldCerealDataset(Dataset):
 
     def get_inputs(self, row_d: Dict, timestep_positions: List[int]) -> dict:
         # Get latlons
-        latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
+        latlon = rearrange(np.array([row_d["lat"], row_d["lon"]], dtype=np.float32), "d -> 1 1 d")
 
         # Get timestamps belonging to each timestep
         timestamps = self._get_timestamps(row_d, timestep_positions)
@@ -607,7 +607,7 @@ def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
         "s2": s2,
         "meteo": meteo,
         "latlon": rearrange(
-            np.stack([lat, lon])[:, 0:1, 0:1], "c x y -> (x y) c", x=1, y=1
+            np.stack([lat, lon]), "c x y -> y x c"
         ),  # TODO make explicit once #36 is tackled
         "dem": dem,
         "timestamps": _get_timestamps(),
