@@ -607,7 +607,7 @@ def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
         "s2": s2,
         "meteo": meteo,
         "latlon": rearrange(
-            np.stack([lat, lon]), "c x y -> y x c"
+            np.stack([lat, lon]), "c x y -> 1 y x c"
         ),  # TODO make explicit once #36 is tackled
         "dem": dem,
         "timestamps": _get_timestamps(),

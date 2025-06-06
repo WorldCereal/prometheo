@@ -162,10 +162,10 @@ def dataset_to_model(x: Predictors):
     if not len(set(timesteps)) == 1:
         raise ValueError("dim -2 (timesteps) must be consistent for s1, s2, meteo")
     if not len(set(hs)) == 1:
-        raise ValueError("dim 1 (height) must be consistent for s1, s2, dem")
+        raise ValueError("dim 1 (height) must be consistent for s1, s2, dem, latlon")
     h = hs[0]
     if not len(set(ws)) == 1:
-        raise ValueError("dim 2 (width) must be consistent for s1, s2, dem")
+        raise ValueError("dim 2 (width) must be consistent for s1, s2, dem, latlon")
     w = ws[0]
 
     batch_size, timesteps = batch_sizes[0], timesteps[0]
@@ -210,7 +210,7 @@ def dataset_to_model(x: Predictors):
 
     latlon: ArrayTensor | None = None
     if x.latlon is not None:
-        latlon = rearrange(latlon, "b h w d -> (b h w) d")
+        latlon = rearrange(x.latlon, "b h w d -> (b h w) d")
 
     timestamps: ArrayTensor | None = None
     if x.timestamps is not None:
