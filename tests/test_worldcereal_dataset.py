@@ -49,11 +49,11 @@ class TestDataset(TestCase):
         # though
         self.assertTrue((batch.timestamps[:, :, 2] >= 1999).all())
         self.assertTrue((batch.timestamps[:, :, 0] <= 2124).all())
-        self.assertEqual(batch.latlon.shape, (batch_size, 2))
-        self.assertTrue((batch.latlon[:, 0] >= -90).all())
-        self.assertTrue((batch.latlon[:, 0] <= 90).all())
-        self.assertTrue((batch.latlon[:, 1] >= -180).all())
-        self.assertTrue((batch.latlon[:, 1] <= 180).all())
+        self.assertEqual(batch.latlon.shape, (batch_size, 1, 1, 2))
+        self.assertTrue((batch.latlon[:, :, :, 0] >= -90).all())
+        self.assertTrue((batch.latlon[:, :, :, 0] <= 90).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] >= -180).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] <= 180).all())
         self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
         if batch.label is not None:

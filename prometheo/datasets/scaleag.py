@@ -4,6 +4,7 @@ from typing import Any, List, Literal, Optional, Union
 import numpy as np
 import pandas as pd
 from loguru import logger
+from einops import rearrange
 from torch.utils.data import Dataset
 
 from prometheo.predictors import (
@@ -143,7 +144,7 @@ class ScaleAgDataset(Dataset):
 
     def get_predictors(self, row: pd.Series) -> Predictors:
         row_d = pd.Series.to_dict(row)
-        latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
+        latlon = rearrange(np.array([row_d["lat"], row_d["lon"]], dtype=np.float32), "d -> 1 1 d")
 
         # initialize sensor arrays filled with NODATAVALUE
         s1, s2, meteo, dem = self.initialize_inputs()
