@@ -19,7 +19,7 @@ class TestPresto(unittest.TestCase):
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
             meteo=np.random.rand(b, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
-            latlon=np.random.rand(b, 1, 1, 2),
+            latlon=np.random.rand(b, h, w, 2),
             label=np.ones((b, 1, 1, 1, 1)),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
@@ -35,7 +35,7 @@ class TestPresto(unittest.TestCase):
         timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
-            latlon=np.random.rand(b, 1, 1, 2),
+            latlon=np.random.rand(b, h, w, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
@@ -81,7 +81,7 @@ class TestPresto(unittest.TestCase):
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
             meteo=np.random.rand(b, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
-            latlon=np.random.rand(b, 1, 1, 2),
+            latlon=np.random.rand(b, h, w, 2),
             label=np.ones((b, h, w, t, 1)),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
@@ -100,7 +100,7 @@ class TestPresto(unittest.TestCase):
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
             meteo=np.random.rand(b, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
-            latlon=np.random.rand(b, 1, 1, 2),
+            latlon=np.random.rand(b, h, w, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
@@ -118,7 +118,7 @@ class TestPresto(unittest.TestCase):
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
             meteo=np.random.rand(b, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
-            latlon=np.random.rand(b, 1, 1, 2),
+            latlon=np.random.rand(b, h, w, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
@@ -138,7 +138,7 @@ class TestPresto(unittest.TestCase):
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
             meteo=np.random.rand(b, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
-            latlon=np.random.rand(b, 1, 1, 2),
+            latlon=np.random.rand(b, h, w, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
         )
         model = Presto()
