@@ -251,8 +251,17 @@ class TestDataset(TestCase):
 
 class TestInference(TestCase):
     def test_run_model_inference(self):
-        """Test the run_model_inference function. Based on ref features
-        generated using this method.
+        """Test the run_model_inference function. Based on reference features
+        generated using the following code at commit 4028b4f :
+
+        arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
+        model_url = str(data_dir / "finetuned_presto_model.pt")
+                presto_features = get_presto_features(
+                    arr, model_url, batch_size=512, epsg=32631
+                )
+        presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
+
+        Features were regenerated at commit 4028b4f since this introduced spatially explicit latlons
         """
         arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
 
