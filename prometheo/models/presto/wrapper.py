@@ -7,7 +7,7 @@ from typing import Optional, Union
 import numpy as np
 import requests
 import torch
-from einops import repeat, rearrange
+from einops import rearrange, repeat
 from torch import nn
 
 from prometheo.predictors import (
@@ -16,13 +16,13 @@ from prometheo.predictors import (
     NODATAVALUE,
     S1_BANDS,
     S2_BANDS,
+    ArrayTensor,
     Predictors,
     to_torchtensor,
-    ArrayTensor
 )
 from prometheo.utils import device
-from ..pooling import PoolingMethods
 
+from ..pooling import PoolingMethods
 from .single_file_presto import (
     BANDS,
     BANDS_ADD,
@@ -194,7 +194,9 @@ def dataset_to_model(x: Predictors):
 
     if x.dem is not None:
         dem_with_time = repeat(
-            x.dem[:, :, :, mapper["dem"]["predictor"]], "b h w d -> b h w t d", t=timesteps
+            x.dem[:, :, :, mapper["dem"]["predictor"]],
+            "b h w d -> b h w t d",
+            t=timesteps,
         )
         output[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time
         mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
@@ -204,15 +206,15 @@ def dataset_to_model(x: Predictors):
             x.meteo[:, :, mapper["meteo"]["predictor"]], "b t d -> b h w t d", h=h, w=w
         )
         output[:, :, :, :, mapper["meteo"]["presto"]] = meteo_with_hw
-        mask[:, :, :, :, mapper["meteo"]["presto"]] = (meteo_with_hw == NODATAVALUE)
+        mask[:, :, :, :, mapper["meteo"]["presto"]] = meteo_with_hw == NODATAVALUE
 
     dynamic_world = np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
-    latlon: ArrayTensor | None = None
+    latlon: Union[ArrayTensor, None] = None
     if x.latlon is not None:
         latlon = rearrange(x.latlon, "b h w d -> (b h w) d")
 
-    timestamps: ArrayTensor | None = None
+    timestamps: Union[ArrayTensor, None] = None
     if x.timestamps is not None:
         timestamps = repeat(x.timestamps, "b t d -> b h w t d", h=h, w=w)
         timestamps = rearrange(timestamps, "b h w t d -> (b h w) t d")
@@ -348,7 +350,9 @@ class PretrainedPrestoWrapper(nn.Module):
             )
 
     def forward(
-        self, x: Predictors, eval_pooling: PoolingMethods | None = PoolingMethods.GLOBAL
+        self,
+        x: Predictors,
+        eval_pooling: Union[PoolingMethods, None] = PoolingMethods.GLOBAL,
     ):
         """
         If x.label is not None, then we infer the output pooling from the labels (time or global).
@@ -364,7 +368,9 @@ class PretrainedPrestoWrapper(nn.Module):
 
         """
 
-        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w = dataset_to_model(x)
+        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w = (
+            dataset_to_model(x)
+        )
 
         # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
@@ -399,9 +405,11 @@ class PretrainedPrestoWrapper(nn.Module):
             embeddings = torch.unsqueeze(embeddings, 3)
         elif eval_pooling == PoolingMethods.TIME:
             b = int(embeddings.shape[0] / (h * w))
-            embeddings = rearrange(embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w)
+            embeddings = rearrange(
+                embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w
+            )
         else:
-            if ((h != 1)) or ((w != 1)):
+            if (h != 1) or (w != 1):
                 raise ValueError("h w != 1 unsupported for SSL")
             pass  # In case of no pooling we assume SSL and don't change embeddings
 
