@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Optional, Union
 
 import torch
-from loguru import logger
 
 data_dir = Path(__file__).parent / "data"
 DEFAULT_SEED: int = 42
@@ -37,6 +36,8 @@ def initialize_logging(
     level="INFO",
     console_filter_keyword: Optional[str] = None,
 ):
+    from loguru import logger
+
     # Remove the default console handler if necessary
     logger.remove()
 
