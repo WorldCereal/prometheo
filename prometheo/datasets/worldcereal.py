@@ -1,6 +1,6 @@
 import functools
 from datetime import datetime
-from typing import Callable, Dict, List, Literal, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -617,7 +617,7 @@ def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
     return Predictors(**predictors_dict)
 
 
-def generate_predictor(x: pd.DataFrame | xr.DataArray, epsg: int) -> Predictors:
+def generate_predictor(x: Union[pd.DataFrame, xr.DataArray], epsg: int) -> Predictors:
     if isinstance(x, xr.DataArray):
         return _predictor_from_xarray(x, epsg)
     raise NotImplementedError
@@ -650,11 +650,11 @@ def compile_encoder(presto_encoder: nn.Module) -> Callable:
 
 
 def run_model_inference(
-    inarr: pd.DataFrame | xr.DataArray,
+    inarr: Union[pd.DataFrame, xr.DataArray],
     model: nn.Module,  # Wrapper
     epsg: int = 4326,
     batch_size: int = 8192,
-) -> np.ndarray | xr.DataArray:
+) -> Union[np.ndarray, xr.DataArray]:
     """
     Runs a forward pass of the model on the input data
 
