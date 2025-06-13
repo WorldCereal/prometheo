@@ -1,5 +1,4 @@
 import unittest
-from abc import ABC
 
 import numpy as np
 import pandas as pd
@@ -29,10 +28,14 @@ from prometheo.utils import data_dir
 models_to_test = [Presto]
 
 
-class WorldCerealDatasetBaseTest(unittest.TestCase, ABC):
-    __test__ = False  # Explicitly mark this class as not a test
-
-    def setUp(self, num_timesteps, timestep_freq, start_date, end_date):
+class TestWorldCerealMonthlyDataset(unittest.TestCase):
+    def setUp(
+        self,
+        num_timesteps=12,
+        timestep_freq="month",
+        start_date="2021-01-01",
+        end_date="2022-01-01",
+    ):
         """Set up test data for datasets tests."""
         self.num_samples = 5
         self.num_timesteps = num_timesteps
@@ -113,6 +116,118 @@ class WorldCerealDatasetBaseTest(unittest.TestCase, ABC):
             timestep_freq=self.timestep_freq,
             num_timesteps=self.num_timesteps,
         )
+
+    def check_batch(self, batch, batch_size, num_timesteps, num_outputs=1):
+        self.assertEqual(
+            batch.s1.shape, (batch_size, 1, 1, num_timesteps, len(S1_BANDS))
+        )
+        self.assertEqual(
+            batch.s2.shape, (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
+        )
+        self.assertEqual(
+            batch.meteo.shape, (batch_size, num_timesteps, len(METEO_BANDS))
+        )
+        self.assertEqual(batch.timestamps.shape, (batch_size, num_timesteps, 3))
+        self.assertTrue((batch.timestamps[:, :, 1] <= 12).all())
+        self.assertTrue((batch.timestamps[:, :, 1] >= 1).all())
+        self.assertTrue((batch.timestamps[:, :, 0] <= 31).all())
+        self.assertTrue((batch.timestamps[:, :, 0] >= 1).all())
+
+        # if we are still using this software in 100 years we will need
+        # to update this. This should catch errors in year transformations
+        # though
+        self.assertTrue((batch.timestamps[:, :, 2] >= 1999).all())
+        self.assertTrue((batch.timestamps[:, :, 0] <= 2124).all())
+        self.assertEqual(batch.latlon.shape, (batch_size, 1, 1, 2))
+        self.assertTrue((batch.latlon[:, :, :, 0] >= -90).all())
+        self.assertTrue((batch.latlon[:, :, :, 0] <= 90).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] >= -180).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] <= 180).all())
+        self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
+
+        if batch.label is not None:
+            # Label should either have a single timestep or num_timesteps
+            self.assertTrue(
+                any(
+                    [
+                        batch.label.shape
+                        == (batch_size, 1, 1, num_timesteps, num_outputs),
+                        batch.label.shape == (batch_size, 1, 1, 1, num_outputs),
+                    ]
+                )
+            )
+
+    def test_model_pass_no_label(self):
+        ds = WorldCerealDataset(
+            self.df, num_timesteps=self.num_timesteps, timestep_freq=self.timestep_freq
+        )
+        batch_size = 2
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
+        batch = next(iter(dl))
+        self.check_batch(batch, batch_size, self.num_timesteps)
+
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
+
+    def test_model_pass_label_time_explicit(self):
+        ds = WorldCerealLabelledDataset(
+            self.df,
+            augment=True,
+            time_explicit=True,
+            num_outputs=1,
+            num_timesteps=self.num_timesteps,
+            timestep_freq=self.timestep_freq,
+        )
+        batch_size = 2
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
+        batch = next(iter(dl))
+        self.check_batch(batch, batch_size, self.num_timesteps)
+
+        # Check time-explicit label: need to have num_timesteps timesteps
+        self.assertEqual(batch.label.shape, (batch_size, 1, 1, self.num_timesteps, 1))
+        self.assertTrue(
+            (np.isin(batch.label.unique().numpy(), [0, 1, NODATAVALUE])).all()
+        )
+
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
+
+    def test_model_pass_label_unitemporal(self):
+        ds = WorldCerealLabelledDataset(
+            self.df,
+            augment=True,
+            num_timesteps=self.num_timesteps,
+            timestep_freq=self.timestep_freq,
+        )
+        batch_size = 2
+        dl = DataLoader(ds, batch_size=batch_size, collate_fn=collate_fn)
+        batch = next(iter(dl))
+        self.check_batch(batch, batch_size, self.num_timesteps)
+
+        # Check uni-temporal label: need to have 1 timesteps
+        self.assertEqual(batch.label.shape, (batch_size, 1, 1, 1, 1))
+        self.assertTrue((batch.label.unique().numpy() == [0, 1]).all())
+
+        for model_cls in models_to_test:
+            model = model_cls()
+            output = model(batch)
+            self.assertEqual(
+                output.shape[0],
+                batch_size,
+                f"Forward pass failed for {model.__class__.__name__}",
+            )
 
     def test_dataset_length(self):
         """Test that dataset length matches dataframe length."""
@@ -239,18 +354,6 @@ class WorldCerealDatasetBaseTest(unittest.TestCase, ABC):
         valid_values = (item.label != NODATAVALUE).sum()
         self.assertEqual(valid_values, 1)
 
-
-class TestWorldCerealMonthlyDataset(WorldCerealDatasetBaseTest):
-    __test__ = True  # Explicitly mark this class as a test
-
-    def setUp(self):
-        super().setUp(
-            num_timesteps=12,
-            timestep_freq="month",
-            start_date="2021-01-01",
-            end_date="2022-01-01",
-        )
-
     def test_get_timestamps(self):
         """Test timestamps for monthly dataset."""
         row = pd.Series.to_dict(self.base_ds.dataframe.iloc[0, :])
@@ -280,9 +383,7 @@ class TestWorldCerealMonthlyDataset(WorldCerealDatasetBaseTest):
         np.testing.assert_array_equal(computed_timestamps, ref_timestamps)
 
 
-class TestWorldCerealDekadalDataset(WorldCerealDatasetBaseTest):
-    __test__ = True  # Explicitly mark this class as a test
-
+class TestWorldCerealDekadalDataset(TestWorldCerealMonthlyDataset):
     def setUp(self):
         super().setUp(
             num_timesteps=36,
