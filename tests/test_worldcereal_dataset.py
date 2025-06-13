@@ -29,7 +29,9 @@ from prometheo.utils import data_dir
 models_to_test = [Presto]
 
 
-class BaseWorldCerealDatasetTest(unittest.TestCase, ABC):
+class WorldCerealDatasetBaseTest(unittest.TestCase, ABC):
+    __test__ = False  # Explicitly mark this class as not a test
+
     def setUp(self, num_timesteps, timestep_freq, start_date, end_date):
         """Set up test data for datasets tests."""
         self.num_samples = 5
@@ -238,7 +240,9 @@ class BaseWorldCerealDatasetTest(unittest.TestCase, ABC):
         self.assertEqual(valid_values, 1)
 
 
-class TestWorldCerealMonthlyDataset(BaseWorldCerealDatasetTest):
+class TestWorldCerealMonthlyDataset(WorldCerealDatasetBaseTest):
+    __test__ = True  # Explicitly mark this class as a test
+
     def setUp(self):
         super().setUp(
             num_timesteps=12,
@@ -248,6 +252,7 @@ class TestWorldCerealMonthlyDataset(BaseWorldCerealDatasetTest):
         )
 
     def test_get_timestamps(self):
+        """Test timestamps for monthly dataset."""
         row = pd.Series.to_dict(self.base_ds.dataframe.iloc[0, :])
         ref_timestamps = np.array(
             (
@@ -275,7 +280,9 @@ class TestWorldCerealMonthlyDataset(BaseWorldCerealDatasetTest):
         np.testing.assert_array_equal(computed_timestamps, ref_timestamps)
 
 
-class TestWorldCerealDekadalDataset(BaseWorldCerealDatasetTest):
+class TestWorldCerealDekadalDataset(WorldCerealDatasetBaseTest):
+    __test__ = True  # Explicitly mark this class as a test
+
     def setUp(self):
         super().setUp(
             num_timesteps=36,
@@ -285,6 +292,7 @@ class TestWorldCerealDekadalDataset(BaseWorldCerealDatasetTest):
         )
 
     def test_get_timestamps(self):
+        """Test timestamps for dekadal dataset."""
         row = pd.Series.to_dict(self.base_ds.dataframe.iloc[0, :])
         ref_timestamps = np.array(
             [
