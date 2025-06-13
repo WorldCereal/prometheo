@@ -241,9 +241,9 @@ def run_finetuning(
     seed_everything(seed)
 
     # Set up optimizer and scheduler
-    assert (optimizer is None) == (
-        scheduler is None
-    ), "`optimizer` and `scheduler` must either both be None or both not None."
+    assert (optimizer is None) == (scheduler is None), (
+        "`optimizer` and `scheduler` must either both be None or both not None."
+    )
     if optimizer is None:
         optimizer = AdamW(model.parameters(), lr=hyperparams.lr)
         scheduler = lr_scheduler.ExponentialLR(optimizer, gamma=0.99)
@@ -254,6 +254,7 @@ def run_finetuning(
 
     # Set model path
     finetuned_model_path = output_dir / f"{experiment_name}.pt"
+    finetuned_encoder_path = output_dir / f"{experiment_name}_encoder.pt"
     if finetuned_model_path.is_file():
         raise FileExistsError(
             f"Model file {finetuned_model_path} already exists. Choose a different directory or experiment name."
@@ -269,6 +270,10 @@ def run_finetuning(
 
     # Save the best model
     torch.save(finetuned_model.state_dict(), finetuned_model_path)
+
+    # Save just the encoder
+    finetuned_model.head = None
+    torch.save(finetuned_model.state_dict(), finetuned_encoder_path)
 
     logger.info("Finetuning done")
 
