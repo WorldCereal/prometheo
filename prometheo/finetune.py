@@ -241,9 +241,9 @@ def run_finetuning(
     seed_everything(seed)
 
     # Set up optimizer and scheduler
-    assert (optimizer is None) == (scheduler is None), (
-        "`optimizer` and `scheduler` must either both be None or both not None."
-    )
+    assert (optimizer is None) == (
+        scheduler is None
+    ), "`optimizer` and `scheduler` must either both be None or both not None."
     if optimizer is None:
         optimizer = AdamW(model.parameters(), lr=hyperparams.lr)
         scheduler = lr_scheduler.ExponentialLR(optimizer, gamma=0.99)

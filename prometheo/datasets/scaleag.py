@@ -3,7 +3,7 @@ from typing import Any, List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
-from loguru import logger
+from einops import rearrange
 from torch.utils.data import Dataset
 
 from prometheo.predictors import (
@@ -129,6 +129,8 @@ class ScaleAgDataset(Dataset):
             )
 
     def set_num_outputs(self) -> Optional[int]:
+        from loguru import logger  # Localized import
+
         if self.task_type in ["binary", "regression"]:
             logger.info(f"Setting number of outputs to 1 for {self.task_type} task.")
             return 1
@@ -143,7 +145,9 @@ class ScaleAgDataset(Dataset):
 
     def get_predictors(self, row: pd.Series) -> Predictors:
         row_d = pd.Series.to_dict(row)
-        latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
+        latlon = rearrange(
+            np.array([row_d["lat"], row_d["lon"]], dtype=np.float32), "d -> 1 1 d"
+        )
 
         # initialize sensor arrays filled with NODATAVALUE
         s1, s2, meteo, dem = self.initialize_inputs()
@@ -249,6 +253,8 @@ class ScaleAgDataset(Dataset):
             raise ValueError(f"Unknown compositing window: {self.compositing_window}")
 
     def get_date_array(self, row):
+        from loguru import logger  # Localized import
+
         # set correct initial and end dates
         start_date = pd.to_datetime(row.start_date)
         end_date = pd.to_datetime(row.end_date)
