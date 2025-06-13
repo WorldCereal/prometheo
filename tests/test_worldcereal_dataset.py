@@ -2,6 +2,7 @@ from unittest import TestCase
 
 import numpy as np
 import pandas as pd
+import xarray as xr
 from resources import load_dataframe
 from torch.utils.data import DataLoader
 
@@ -9,8 +10,10 @@ from prometheo.datasets import WorldCerealDataset, WorldCerealLabelledDataset
 from prometheo.datasets.worldcereal import (
     get_dekad_timestamp_components,
     get_monthly_timestamp_components,
+    run_model_inference,
 )
 from prometheo.models import Presto
+from prometheo.models.presto.wrapper import load_presto_weights
 from prometheo.predictors import (
     DEM_BANDS,
     METEO_BANDS,
@@ -19,6 +22,7 @@ from prometheo.predictors import (
     S2_BANDS,
     collate_fn,
 )
+from prometheo.utils import data_dir
 
 models_to_test = [Presto]
 
@@ -45,11 +49,11 @@ class TestDataset(TestCase):
         # though
         self.assertTrue((batch.timestamps[:, :, 2] >= 1999).all())
         self.assertTrue((batch.timestamps[:, :, 0] <= 2124).all())
-        self.assertEqual(batch.latlon.shape, (batch_size, 2))
-        self.assertTrue((batch.latlon[:, 0] >= -90).all())
-        self.assertTrue((batch.latlon[:, 0] <= 90).all())
-        self.assertTrue((batch.latlon[:, 1] >= -180).all())
-        self.assertTrue((batch.latlon[:, 1] <= 180).all())
+        self.assertEqual(batch.latlon.shape, (batch_size, 1, 1, 2))
+        self.assertTrue((batch.latlon[:, :, :, 0] >= -90).all())
+        self.assertTrue((batch.latlon[:, :, :, 0] <= 90).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] >= -180).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] <= 180).all())
         self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
         if batch.label is not None:
@@ -243,3 +247,46 @@ class TestDataset(TestCase):
                 timestamps[:, 2] == [2020 for _ in range(5)] + [2021 for _ in range(7)]
             ).all()
         )
+
+
+class TestInference(TestCase):
+    def test_run_model_inference(self):
+        """Test the run_model_inference function. Based on reference features
+        generated using the following code at commit 6f0f7d6 :
+
+        arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
+        model_url = str(data_dir / "finetuned_presto_model.pt")
+                presto_features = get_presto_features(
+                    arr, model_url, batch_size=512, epsg=32631
+                )
+        presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
+
+        Features were regenerated at commit 6f0f7d6 since this fixed a bug with dtypes
+        """
+        arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
+
+        # Load a pretrained Presto model
+        model_url = str(data_dir / "finetuned_presto_model.pt")
+        presto_model = Presto()
+        presto_model = load_presto_weights(presto_model, model_url)
+
+        presto_features = run_model_inference(
+            arr, presto_model, batch_size=512, epsg=32631
+        )
+
+        # Uncomment to regenerate ref features
+        # presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
+
+        # Load ref features
+        ref_presto_features = xr.open_dataarray(
+            data_dir / "test_presto_inference_features.nc"
+        )
+
+        xr.testing.assert_allclose(
+            presto_features,
+            ref_presto_features,
+            rtol=1e-04,
+            atol=1e-04,
+        )
+
+        assert presto_features.dims == ref_presto_features.dims
