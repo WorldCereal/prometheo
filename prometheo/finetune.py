@@ -272,8 +272,9 @@ def run_finetuning(
     torch.save(finetuned_model.state_dict(), finetuned_model_path)
 
     # Save just the encoder
-    finetuned_model.head = None
-    torch.save(finetuned_model.state_dict(), finetuned_encoder_path)
+    encoder_model = deepcopy(finetuned_model)
+    encoder_model.head = None
+    torch.save(encoder_model.state_dict(), finetuned_encoder_path)
 
     logger.info("Finetuning done")
 
