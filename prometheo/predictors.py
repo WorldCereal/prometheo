@@ -1,4 +1,4 @@
-from typing import NamedTuple, Optional, Union, Sequence
+from typing import Generator, NamedTuple, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -48,12 +48,12 @@ class Predictors(NamedTuple):
     s2: Optional[ArrayTensor] = None  # [B, H, W, T, len(S2_bands)]
     meteo: Optional[ArrayTensor] = None  # [B, T, len(meteo_bands)]
     dem: Optional[ArrayTensor] = None  # [B, H, W, len(dem)]
-    latlon: Optional[ArrayTensor] = None  # [B, 2]
+    latlon: Optional[ArrayTensor] = None  # [B, H, W, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
     # for now we ignore them
     # aux_inputs: Optional[List[ArrayTensor]] = None
     # Label needs to always be 2D, with temporal dimension
-    label: Optional[ArrayTensor] = None  # [B, H, W, T, num_outputs]
+    label: Optional[ArrayTensor] = None  # [B, H, W, T, 1]
     timestamps: Optional[ArrayTensor] = None  # [B, T, D=3], where D=[day, month, year]
 
     def as_dict(self, ignore_nones: bool = True):
@@ -65,6 +65,26 @@ class Predictors(NamedTuple):
             else:
                 return_dict[field] = val
         return return_dict
+
+    @property
+    def B(self) -> int:
+        for field in self._fields:
+            val = getattr(self, field)
+            if val is not None:
+                return val.shape[0]
+        raise ValueError("No assigned ArrayTensors! B cannot be determined")
+
+    def as_batches(self, batch_size: int) -> Generator["Predictors", None, None]:
+        cur_idx = 0
+        predictor_as_dict = self.as_dict()
+        while cur_idx < self.B:
+            yield Predictors(
+                **{
+                    key: val[cur_idx : cur_idx + batch_size]
+                    for key, val in predictor_as_dict.items()
+                }
+            )
+            cur_idx += batch_size
 
 
 def collate_fn(batch: Sequence[Predictors]):

@@ -3,10 +3,9 @@ from pathlib import Path
 from typing import Optional, Union
 
 import torch
-from loguru import logger
 
+data_dir = Path(__file__).parent / "data"
 DEFAULT_SEED: int = 42
-
 
 if not torch.cuda.is_available():
     device = torch.device("cpu")
@@ -37,6 +36,8 @@ def initialize_logging(
     level="INFO",
     console_filter_keyword: Optional[str] = None,
 ):
+    from loguru import logger
+
     # Remove the default console handler if necessary
     logger.remove()
 
@@ -48,14 +49,18 @@ def initialize_logging(
         "<level>{message}</level>"
     )
 
+    log_filter = (
+        (lambda record: console_filter_keyword not in record["message"])
+        if console_filter_keyword is not None
+        else None
+    )
+
     # Re-add console handler with optional filtering
     logger.add(
         sys.stdout,
         level=level,
         format=custom_format,
-        filter=lambda record: console_filter_keyword not in record["message"]
-        if console_filter_keyword
-        else None,
+        filter=log_filter,
     )
 
     # File handler

@@ -2,12 +2,12 @@ import io
 import warnings
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal, Optional, Union
+from typing import Optional, Union
 
 import numpy as np
 import requests
 import torch
-from einops import repeat, rearrange
+from einops import rearrange, repeat
 from torch import nn
 
 from prometheo.predictors import (
@@ -16,12 +16,13 @@ from prometheo.predictors import (
     NODATAVALUE,
     S1_BANDS,
     S2_BANDS,
+    ArrayTensor,
     Predictors,
     to_torchtensor,
-    ArrayTensor
 )
 from prometheo.utils import device
 
+from ..pooling import PoolingMethods
 from .single_file_presto import (
     BANDS,
     BANDS_ADD,
@@ -150,8 +151,8 @@ def normalize(x: np.ndarray, mask: np.ndarray):
 def dataset_to_model(x: Predictors):
     batch_sizes = [v.shape[0] for v in [x.s1, x.s2, x.meteo, x.dem] if v is not None]
     timesteps = [v.shape[-2] for v in [x.s1, x.s2, x.meteo] if v is not None]
-    hs = [v.shape[1] for v in [x.s1, x.s2, x.dem] if v is not None]
-    ws = [v.shape[2] for v in [x.s1, x.s2, x.dem] if v is not None]
+    hs = [v.shape[1] for v in [x.s1, x.s2, x.dem, x.latlon] if v is not None]
+    ws = [v.shape[2] for v in [x.s1, x.s2, x.dem, x.latlon] if v is not None]
     if len(timesteps) == 0:
         raise ValueError("One of s1, s2, meteo must be not None")
     if len(hs) == 0:
@@ -161,10 +162,10 @@ def dataset_to_model(x: Predictors):
     if not len(set(timesteps)) == 1:
         raise ValueError("dim -2 (timesteps) must be consistent for s1, s2, meteo")
     if not len(set(hs)) == 1:
-        raise ValueError("dim 1 (height) must be consistent for s1, s2, dem")
+        raise ValueError("dim 1 (height) must be consistent for s1, s2, dem, latlon")
     h = hs[0]
     if not len(set(ws)) == 1:
-        raise ValueError("dim 2 (width) must be consistent for s1, s2, dem")
+        raise ValueError("dim 2 (width) must be consistent for s1, s2, dem, latlon")
     w = ws[0]
 
     batch_size, timesteps = batch_sizes[0], timesteps[0]
@@ -193,7 +194,9 @@ def dataset_to_model(x: Predictors):
 
     if x.dem is not None:
         dem_with_time = repeat(
-            x.dem[:, :, :, mapper["dem"]["predictor"]], "b h w d -> b h w t d", t=timesteps
+            x.dem[:, :, :, mapper["dem"]["predictor"]],
+            "b h w d -> b h w t d",
+            t=timesteps,
         )
         output[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time
         mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
@@ -203,17 +206,15 @@ def dataset_to_model(x: Predictors):
             x.meteo[:, :, mapper["meteo"]["predictor"]], "b t d -> b h w t d", h=h, w=w
         )
         output[:, :, :, :, mapper["meteo"]["presto"]] = meteo_with_hw
-        mask[:, :, :, :, mapper["meteo"]["presto"]] = (meteo_with_hw == NODATAVALUE)
+        mask[:, :, :, :, mapper["meteo"]["presto"]] = meteo_with_hw == NODATAVALUE
 
     dynamic_world = np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
-    latlon: ArrayTensor | None = None
+    latlon: Union[ArrayTensor, None] = None
     if x.latlon is not None:
-        latlon = repeat(x.latlon, "b d -> b h w d", h=h, w=w)
-        latlon = rearrange(latlon, "b h w d -> (b h w) d")
+        latlon = rearrange(x.latlon, "b h w d -> (b h w) d")
 
-
-    timestamps: ArrayTensor | None = None
+    timestamps: Union[ArrayTensor, None] = None
     if x.timestamps is not None:
         timestamps = repeat(x.timestamps, "b t d -> b h w t d", h=h, w=w)
         timestamps = rearrange(timestamps, "b h w t d -> (b h w) t d")
@@ -230,7 +231,7 @@ def load_presto_weights(
     presto_model: Presto,
     weights_path: Union[str, Path] = default_model_path,
     strict: bool = True,
-):
+) -> Presto:
     """Load pretrained weights into a Presto model.
 
     Parameters
@@ -349,7 +350,9 @@ class PretrainedPrestoWrapper(nn.Module):
             )
 
     def forward(
-        self, x: Predictors, eval_pooling: Literal["global", "time", None] = "global"
+        self,
+        x: Predictors,
+        eval_pooling: Union[PoolingMethods, None] = PoolingMethods.GLOBAL,
     ):
         """
         If x.label is not None, then we infer the output pooling from the labels (time or global).
@@ -365,18 +368,20 @@ class PretrainedPrestoWrapper(nn.Module):
 
         """
 
-        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w= dataset_to_model(x)
+        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w = (
+            dataset_to_model(x)
+        )
 
         # labels should have shape [B, H, W, T or 1, num_outputs].
         # need some way to communicate global vs time if
         # they are not passed as part of the predictors.
         if x.label is not None:
             if x.label.shape[3] == dynamic_world.shape[1]:
-                eval_pooling = "time"
+                eval_pooling = PoolingMethods.TIME
             else:
                 if x.label.shape[1] != 1:
                     raise ValueError(f"Unexpected label shape {x.label.shape}")
-                eval_pooling = "global"
+                eval_pooling = PoolingMethods.GLOBAL
 
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
@@ -389,24 +394,28 @@ class PretrainedPrestoWrapper(nn.Module):
             mask=to_torchtensor(mask, device=model_device).long(),
             # presto wants 0 indexed months, not 1 indexed months
             month=to_torchtensor(timestamps[:, :, 1] - 1, device=model_device),
-            eval_pooling=eval_pooling,
+            eval_pooling=eval_pooling.value if eval_pooling is not None else None,
         )
 
         # Need to reintroduce spatial and temporal dims according to prometheo convention
-        if eval_pooling == "global":
+        if eval_pooling == PoolingMethods.GLOBAL:
             b = int(embeddings.shape[0] / (h * w))
             embeddings = rearrange(embeddings, "(b h w) d -> b h w d", b=b, h=h, w=w)
             # add the time dimension back
             embeddings = torch.unsqueeze(embeddings, 3)
-        elif eval_pooling == "time":
+        elif eval_pooling == PoolingMethods.TIME:
             b = int(embeddings.shape[0] / (h * w))
-            embeddings = rearrange(embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w)
+            embeddings = rearrange(
+                embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w
+            )
         else:
-            if ((h != 1)) or ((w != 1)):
+            if (h != 1) or (w != 1):
                 raise ValueError("h w != 1 unsupported for SSL")
             pass  # In case of no pooling we assume SSL and don't change embeddings
 
         if self.head is not None:
+            if eval_pooling is None:
+                raise ValueError("Can't use the head without a pooling method")
             return self.head(embeddings)
         else:
             return embeddings

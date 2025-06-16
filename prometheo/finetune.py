@@ -6,16 +6,11 @@ from typing import Union
 import torch
 from loguru import logger
 from torch.optim import AdamW, lr_scheduler
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 from prometheo.predictors import NODATAVALUE
-from prometheo.utils import (  # config_dir,; data_dir,; default_model_path,
-    DEFAULT_SEED,
-    device,
-    initialize_logging,
-    seed_everything,
-)
+from prometheo.utils import DEFAULT_SEED, device, initialize_logging, seed_everything
 
 
 @dataclass
@@ -73,10 +68,20 @@ def _train_loop(
         for batch in tqdm(train_dl, desc="Training", leave=False):
             optimizer.zero_grad()
             preds = model(batch)
-            targets = batch.label.to(device).float()
+            targets = batch.label.to(device)
+            if preds.dim() > 1 and preds.size(-1) > 1:
+                # multiclass case: targets should be class indices
+                # predictions are multiclass logits
+                targets = targets.long().squeeze(axis=-1)
+            else:
+                # binary or regression case
+                targets = targets.float()
+
+            # Compute loss
             loss = loss_fn(
                 preds[targets != NODATAVALUE], targets[targets != NODATAVALUE]
             )
+
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
@@ -89,13 +94,25 @@ def _train_loop(
         for batch in val_dl:
             with torch.no_grad():
                 preds = model(batch)
-                targets = batch.label.to(device).float()
+                targets = batch.label.to(device)
+
+                if preds.dim() > 1 and preds.size(-1) > 1:
+                    # multiclass case: targets should be class indices
+                    # predictions are multiclass logits
+                    targets = targets.long().squeeze(axis=-1)
+                else:
+                    # binary or regression case
+                    targets = targets.float()
+
                 preds = preds[targets != NODATAVALUE]
                 targets = targets[targets != NODATAVALUE]
                 all_preds.append(preds)
                 all_y.append(targets)
 
-        val_loss.append(loss_fn(torch.cat(all_preds), torch.cat(all_y)))
+        val_preds = torch.cat(all_preds)
+        val_targets = torch.cat(all_y)
+        current_val_loss = loss_fn(val_preds, val_targets).item()
+        val_loss.append(current_val_loss)
 
         if best_loss is None:
             best_loss = val_loss[-1]
@@ -112,9 +129,10 @@ def _train_loop(
                     break
 
         description = (
-            f"Train metric: {train_loss[-1]:.3f},"
-            f" Val metric: {val_loss[-1]:.3f},"
-            f" Best Val Loss: {best_loss:.3f}"
+            f"Epoch {epoch + 1}/{hyperparams.max_epochs} | "
+            f"Train Loss: {train_loss[-1]:.4f} | "
+            f"Val Loss: {current_val_loss:.4f} | "
+            f"Best Loss: {best_loss:.4f}"
         )
 
         if epochs_since_improvement > 0:
@@ -123,6 +141,7 @@ def _train_loop(
             description += " (improved)"
 
         pbar.set_description(description)
+        pbar.set_postfix(lr=scheduler.get_last_lr()[0])
         logger.info(
             f"PROGRESS after Epoch {epoch + 1}/{hyperparams.max_epochs}: {description}"
         )  # Only log to file if console filters on "PROGRESS"
@@ -173,8 +192,8 @@ def _setup(output_dir: Path, experiment_name: Union[str, Path], setup_logging: b
 
 def run_finetuning(
     model: torch.nn.Module,
-    train_ds: Dataset,
-    val_ds: Dataset,
+    train_dl: DataLoader,
+    val_dl: DataLoader,
     experiment_name: str,
     output_dir: Union[Path, str],
     loss_fn: torch.nn.Module,
@@ -190,10 +209,10 @@ def run_finetuning(
     ----------
     model : torch.nn.Module
         The model to be finetuned.
-    train_ds : Dataset
-        The training dataset.
-    val_ds : Dataset
-        The validation dataset.
+    train_dl : DataLoader
+        The training dataloader.
+    val_dl : DataLoader
+        The validation dataloader.
     experiment_name : str
         The name of the experiment.
     output_dir : Union[Path, str]
@@ -210,7 +229,6 @@ def run_finetuning(
         The random seed for reproducibility. Default is DEFAULT_SEED.
     setup_logging : bool, optional
         Whether to set up logging for the finetuning process. Default is True.
-
     Returns
     -------
     torch.nn.Module
@@ -236,6 +254,7 @@ def run_finetuning(
 
     # Set model path
     finetuned_model_path = output_dir / f"{experiment_name}.pt"
+    finetuned_encoder_path = output_dir / f"{experiment_name}_encoder.pt"
     if finetuned_model_path.is_file():
         raise FileExistsError(
             f"Model file {finetuned_model_path} already exists. Choose a different directory or experiment name."
@@ -244,25 +263,6 @@ def run_finetuning(
     # Move model to device
     model.to(device)
 
-    # Setup dataloaders
-    generator = torch.Generator()
-    generator.manual_seed(seed)
-
-    train_dl = DataLoader(
-        train_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=True,
-        num_workers=hyperparams.num_workers,
-        generator=generator,
-    )
-
-    val_dl = DataLoader(
-        val_ds,
-        batch_size=hyperparams.batch_size,
-        shuffle=False,
-        num_workers=hyperparams.num_workers,
-    )
-
     # Run the finetuning loop
     finetuned_model = _train_loop(
         model, train_dl, val_dl, hyperparams, loss_fn, optimizer, scheduler
@@ -270,6 +270,11 @@ def run_finetuning(
 
     # Save the best model
     torch.save(finetuned_model.state_dict(), finetuned_model_path)
+
+    # Save just the encoder
+    encoder_model = deepcopy(finetuned_model)
+    encoder_model.head = None
+    torch.save(encoder_model.state_dict(), finetuned_encoder_path)
 
     logger.info("Finetuning done")
 

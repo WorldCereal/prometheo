@@ -1,10 +1,17 @@
-from datetime import datetime
-from typing import Dict, List, Literal, Optional, Tuple
+import functools
+from typing import Callable, Dict, List, Literal, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import pandas as pd
+import torch
+import xarray as xr
+from einops import rearrange, repeat
+from pyproj import Transformer
+from torch import nn
 from torch.utils.data import Dataset
 
+from prometheo.infer import extract_features_from_model
+from prometheo.models.pooling import PoolingMethods
 from prometheo.predictors import (
     DEM_BANDS,
     METEO_BANDS,
@@ -39,8 +46,8 @@ class WorldCerealDataset(Dataset):
         self,
         dataframe: pd.DataFrame,
         num_timesteps: int = 12,
-        timestep_freq: str = "month",
-        task_type: Literal["ssl", "binary", "multiclass", "regression"] = "ssl",
+        timestep_freq: Literal["month", "dekad"] = "month",
+        task_type: Literal["ssl", "binary", "multiclass"] = "ssl",
         num_outputs: Optional[int] = None,
         augment: bool = False,
     ):
@@ -124,7 +131,7 @@ class WorldCerealDataset(Dataset):
         """Helper method to decide on the center point based on which to
         extract the timesteps."""
 
-        if not augment:
+        if not augment or available_timesteps == self.num_timesteps:
             #  check if the valid position is too close to the start_date and force shifting it
             if valid_position < self.num_timesteps // 2:
                 center_point = self.num_timesteps // 2
@@ -165,16 +172,21 @@ class WorldCerealDataset(Dataset):
 
         return center_point
 
-    def _get_timestamps(self, row_d: Dict, timestep_positions: List[int]) -> np.ndarray:
-        start_date = datetime.strptime(row_d["start_date"], "%Y-%m-%d")
-        end_date = datetime.strptime(row_d["end_date"], "%Y-%m-%d")
+    def _get_timestamps(self, row: Dict, timestep_positions: List[int]) -> np.ndarray:
+        """
+        Generate an array of dates based on the specified compositing window.
+        """
+        # adjust start date depending on the compositing window
+        start_date = np.datetime64(row["start_date"], "D")
+        end_date = np.datetime64(row["end_date"], "D")
 
-        if self.timestep_freq == "month":
-            days, months, years = get_monthly_timestamp_components(start_date, end_date)
-        elif self.timestep_freq == "dekad":
+        # Generate date vector depending on the compositing window
+        if self.timestep_freq == "dekad":
             days, months, years = get_dekad_timestamp_components(start_date, end_date)
+        elif self.timestep_freq == "month":
+            days, months, years = get_monthly_timestamp_components(start_date, end_date)
         else:
-            raise NotImplementedError()
+            raise ValueError(f"Unknown compositing window: {self.timestep_freq}")
 
         return np.stack(
             [
@@ -187,7 +199,9 @@ class WorldCerealDataset(Dataset):
 
     def get_inputs(self, row_d: Dict, timestep_positions: List[int]) -> dict:
         # Get latlons
-        latlon = np.array([row_d["lat"], row_d["lon"]], dtype=np.float32)
+        latlon = rearrange(
+            np.array([row_d["lat"], row_d["lon"]], dtype=np.float32), "d -> 1 1 d"
+        )
 
         # Get timestamps belonging to each timestep
         timestamps = self._get_timestamps(row_d, timestep_positions)
@@ -248,16 +262,16 @@ class WorldCerealDataset(Dataset):
 
 
 class WorldCerealLabelledDataset(WorldCerealDataset):
-    FILTER_LABELS = [0, 10]
-
     def __init__(
         self,
         dataframe,
-        task_type: Literal["binary", "multiclass", "regression"] = "binary",
+        task_type: Literal["binary", "multiclass"] = "binary",
         num_outputs: int = 1,
-        croptype_list: List = [],
-        return_hierarchical_labels: bool = False,
+        classes_list: Union[np.ndarray, List[str]] = [],
         time_explicit: bool = False,
+        augment: bool = False,
+        label_jitter: int = 0,  # ± timesteps to jitter true label pos, for time_explicit only
+        label_window: int = 0,  # ± timesteps to expand around label pos (true or moved), for time_explicit only
         **kwargs,
     ):
         """Labelled version of WorldCerealDataset for supervised training.
@@ -267,35 +281,44 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         ----------
         num_outputs : int, optional
             number of outputs to supervise training on, by default 1
-        croptype_list : List, optional
-            TODO: explain, by default []
-        return_hierarchical_labels : bool, optional
-            TODO: explain, by default False
+        classes_list : List, optional
+            list of column names in the dataframe containing class labels for multiclass tasks,
+            used to extract labels from each row of the dataframe, by default []
         time_explicit : bool, optional
             if True, labels respect the full temporal dimension
             to have temporally explicit outputs, by default False
+        label_jitter : int, optional
+            ± timesteps to jitter true label pos, for time_explicit only, by default 0.
+            Only used if `time_explicit` is True.
+        label_window : int, optional
+            ± timesteps to expand around label pos (true or moved), for time_explicit only, by default 0.
+            Only used if `time_explicit` is True.
         """
-        assert task_type in [
-            "binary",
-            "multiclass",
-            "regression",
-        ], f"Invalid task type `{task_type}` for labelled dataset"
-
-        dataframe = dataframe.loc[~dataframe.LANDCOVER_LABEL.isin(self.FILTER_LABELS)]
+        assert task_type in ["binary", "multiclass"], (
+            f"Invalid task type `{task_type}` for labelled dataset"
+        )
 
         super().__init__(
-            dataframe, task_type=task_type, num_outputs=num_outputs, **kwargs
+            dataframe,
+            task_type=task_type,
+            num_outputs=num_outputs,
+            augment=augment,
+            **kwargs,
         )
-        self.croptype_list = croptype_list
+        self.classes_list = classes_list
         self.time_explicit = time_explicit
-        self.return_hierarchical_labels = return_hierarchical_labels
+        self.label_jitter = label_jitter
+        self.label_window = label_window
 
     def __getitem__(self, idx):
         row = pd.Series.to_dict(self.dataframe.iloc[idx, :])
         timestep_positions, valid_position = self.get_timestep_positions(row)
         inputs = self.get_inputs(row, timestep_positions)
         label = self.get_label(
-            row, "cropland", valid_position=valid_position - timestep_positions[0]
+            row,
+            task_type=self.task_type,
+            classes_list=self.classes_list,
+            valid_position=valid_position - timestep_positions[0],
         )
 
         return Predictors(**inputs, label=label)
@@ -303,18 +326,21 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
     def initialize_label(self):
         tsteps = self.num_timesteps if self.time_explicit else 1
         label = np.full(
-            (1, 1, tsteps, self.num_outputs),
+            (1, 1, tsteps, 1),
             fill_value=NODATAVALUE,
             dtype=np.int32,
-        )  # [H, W, T or 1, num_outputs]
+        )  # [H, W, T or 1, 1]
 
         return label
 
     def get_label(
         self,
         row_d: Dict,
-        task_type: str = "cropland",
-        valid_position: Optional[int] = None,
+        task_type: Literal["binary", "multiclass"] = "binary",
+        classes_list: Optional[List] = None,
+        valid_position: Optional[
+            Union[int, Sequence[int]]
+        ] = None,  # TO DO: this can also be a list of positions
     ) -> np.ndarray:
         """Get the label for the given row. Label is a 2D array based on
         the number of timesteps and number of outputs. If time_explicit is False,
@@ -325,12 +351,16 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         row_d : Dict
             input row as a dictionary
         task_type : str, optional
-            task type to infer labels from, by default "cropland"
+            task type to infer labels from, by default "binary"
+        classes_list : Optional[List], optional
+            list of column names in the dataframe containing class labels for multiclass tasks,
+            must be provided if task_type is "multiclass", by default None
         valid_position : int, optional
-            validity position of the label, by default None.
+            the ‘true’ timestep index where the label lives, by default None.
             If provided and `time_explicit` is True,
             only the label at the corresponding timestep will be
             set while other timesteps will be set to NODATAVALUE.
+            We’ll optionally jitter it and/or expand it into a small time‐window.
 
         Returns
         -------
@@ -339,170 +369,376 @@ class WorldCerealLabelledDataset(WorldCerealDataset):
         """
 
         label = self.initialize_label()
-        if not self.time_explicit:
-            # We have only one label for the whole sequence
-            valid_idx = 0
-        else:
-            valid_idx = valid_position or np.arange(self.num_timesteps)
+        T = self.num_timesteps
 
-        if task_type == "cropland":
-            label[0, 0, valid_idx, :] = int(row_d["LANDCOVER_LABEL"] == 11)
-        if task_type == "croptype":
-            if self.return_hierarchical_labels:
-                label[0, 0, valid_idx, :] = [
-                    row_d["landcover_name"],
-                    row_d["downstream_class"],
-                ]
-            elif len(self.croptype_list) == 0:
-                label[0, 0, valid_idx, :] = row_d["downstream_class"]
+        # 1) determine base position (single int) or all-positions if not time_explicit
+        base_idxs: List[int]
+        if not self.time_explicit:
+            base_idxs = [0]
+        else:
+            if valid_position is None:
+                # putting label at every timestep
+                base_idxs = list(range(T))
+            elif isinstance(valid_position, (list, tuple, np.ndarray)):
+                # bring into a flat Python list of ints
+                if isinstance(valid_position, np.ndarray):
+                    seq: List[int] = valid_position.astype(int).tolist()
+                else:
+                    seq = [int(x) for x in valid_position]
+                # one global jitter shift
+                if self.label_jitter > 0:
+                    shift = np.random.randint(-self.label_jitter, self.label_jitter + 1)
+                    seq = [int(np.clip(p + shift, 0, T - 1)) for p in seq]
+                # one contiguous window around the min→max of seq
+                if self.label_window > 0:
+                    mn = min(seq)
+                    mx = max(seq)
+                    start = max(0, mn - self.label_window)
+                    end = min(T - 1, mx + self.label_window)
+                    base_idxs = list(range(start, end + 1))
+                else:
+                    base_idxs = seq
             else:
-                label[0, 0, valid_idx, :] = np.array(
-                    row_d[self.croptype_list].astype(int).values
+                # apply jitter
+                # scalar valid_position must be an int here
+                assert isinstance(valid_position, int), (
+                    f"Expected single int valid_position, got {type(valid_position)}"
                 )
+                p = valid_position
+                if self.label_jitter > 0:
+                    shift = np.random.randint(-self.label_jitter, self.label_jitter + 1)
+                    p = int(np.clip(p + shift, 0, T - 1))
+                # apply window expansion
+                if self.label_window > 0:
+                    start = max(0, p - self.label_window)
+                    end = min(T - 1, p + self.label_window)
+                    base_idxs = list(range(start, end + 1))
+                else:
+                    base_idxs = [p]
+
+        valid_idx = np.array(base_idxs, dtype=int)
+
+        # 2) set the labels at those indices
+        if task_type == "binary":
+            label[0, 0, valid_idx, 0] = int(
+                not row_d["finetune_class"].startswith("not_")
+            )
+        elif task_type == "multiclass":
+            if not classes_list:
+                raise ValueError("classes_list should be provided for multiclass task")
+            label[0, 0, valid_idx, 0] = classes_list.index(row_d["finetune_class"])
+
         return label
 
 
-def generate_month_sequence(start_date: datetime, end_date: datetime) -> np.ndarray:
-    """Helper function to generate a sequence of months between start_date and end_date.
-    This is much faster than using a pd.date_range().
+def align_to_composite_window(
+    dt_in: np.datetime64, timestep_freq: Literal["month", "dekad"]
+) -> np.datetime64:
+    """
+    Determine the composite window start date based on the input date and compositing window.
 
     Parameters
     ----------
-    start_date : datetime
-        start of the sequence
-    end_date : datetime
-        end of the sequence
+    dt_in : np.datetime64
+        Input date string in a format compatible with numpy.datetime64 (e.g., 'YYYY-MM-DD').
+    timestep_freq : Literal["month", "dekad"]
+        The compositing window to use for determining the correct date.
+        - "month": Returns the first day of the month.
+        - "dekad": Returns the first day of the dekad (1st, 11th, or 21st of the month).
 
     Returns
     -------
-    array contaning the sequence of months
+    np.datetime64
+        The corrected date as a numpy.datetime64 object, corresponding to the start of the specified compositing window.
+
+    Raises
+    ------
+    ValueError
+        If an unknown compositing window is provided.
 
     """
-    start = np.datetime64(start_date, "M")  # Truncate to month start
-    end = np.datetime64(end_date, "M")  # Truncate to month start
-    timestamps = np.arange(start, end + 1, dtype="datetime64[M]")
+    # Extract year, month, and day
+    year = dt_in.astype("object").year
+    month = dt_in.astype("object").month
+    day = dt_in.astype("object").day
 
-    return timestamps
+    if timestep_freq == "dekad":
+        if day <= 10:
+            correct_date = np.datetime64(f"{year}-{month:02d}-01")
+        elif 11 <= day <= 20:
+            correct_date = np.datetime64(f"{year}-{month:02d}-11")
+        else:
+            correct_date = np.datetime64(f"{year}-{month:02d}-21")
+    elif timestep_freq == "month":
+        correct_date = np.datetime64(f"{year}-{month:02d}-01")
+    else:
+        raise ValueError(f"Unknown compositing window: {timestep_freq}")
+
+    return correct_date
+
+
+def get_dekad_timestamp_components(
+    start_date: np.datetime64, end_date: np.datetime64
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Generate dekad (10-day period) timestamp components (day, month, year) between a start and end date.
+
+    Parameters
+    ----------
+    start_date : np.datetime64
+        The starting date from which to generate dekad timestamps.
+    end_date : np.datetime64
+        The ending date up to which dekad timestamps are generated (inclusive).
+
+    Returns
+    -------
+    days : np.ndarray
+        Array of day components for each dekad timestamp.
+    months : np.ndarray
+        Array of month components for each dekad timestamp.
+    years : np.ndarray
+        Array of year components for each dekad timestamp.
+    """
+
+    # Align start and end dates to the dekad window
+    start_date = align_to_composite_window(start_date, "dekad")
+    end_date = align_to_composite_window(end_date, "dekad")
+
+    # Extract year, month, and day
+    year = start_date.astype("object").year
+    month = start_date.astype("object").month
+    day = start_date.astype("object").day
+
+    year_end = end_date.astype("object").year
+    month_end = end_date.astype("object").month
+    day_end = end_date.astype("object").day
+
+    days, months, years = [day], [month], [year]
+    while f"{year}-{month}-{day}" != f"{year_end}-{month_end}-{day_end}":
+        if day < 21:
+            day += 10
+        else:
+            month = month + 1 if month < 12 else 1
+            year = year + 1 if month == 1 else year
+            day = 1
+        days.append(day)
+        months.append(month)
+        years.append(year)
+    return np.array(days), np.array(months), np.array(years)
 
 
 def get_monthly_timestamp_components(
-    start_date: datetime, end_date: datetime
+    start_date: np.datetime64, end_date: np.datetime64
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Helper function to generate day/month/year components for
-    a sequence of months between start_date and end_date.
+    """
+    Generate monthly timestamp components (day, month, year) between a start and end date.
 
     Parameters
     ----------
-    start_date : datetime
-        start of the sequence
-    end_date : datetime
-        end of the sequence
+    start_date : np.datetime64
+        The starting date from which to generate month timestamps.
+    end_date : np.datetime64
+        The ending date up to which to generate month timestamps.
 
     Returns
     -------
-    Tuple[np.ndarray, np.ndarray, np.ndarray]
-        tuple of day, month, year components for monthly sequence
+    days : np.ndarray
+        Array of day components for each month timestamp.
+    months : np.ndarray
+        Array of month components for each month timestamp.
+    years : np.ndarray
+        Array of year components for each month timestamp.
     """
 
-    timestamps = generate_month_sequence(start_date, end_date)
-    years = timestamps.astype("datetime64[Y]").astype(int) + 1970
-    months = timestamps.astype("datetime64[M]").astype(int) % 12 + 1
-    days = np.ones_like(years)  # All days are 1 for "MS" frequency
+    # Align start and end dates to the first day of the month
+    start_date = align_to_composite_window(start_date, "month")
+    end_date = align_to_composite_window(end_date, "month")
 
+    # Truncate to month precision (year and month only, day is dropped)
+    start_month = np.datetime64(start_date, "M")
+    end_month = np.datetime64(end_date, "M")
+    num_timesteps = (end_month - start_month).astype(int) + 1
+
+    # generate date vector based on the number of timesteps
+    date_vector = start_month + np.arange(num_timesteps, dtype="timedelta64[M]")
+
+    # generate day, month and year vectors with numpy operations
+    days = np.ones(len(date_vector), dtype=int)
+    months = (date_vector.astype("datetime64[M]").astype(int) % 12) + 1
+    years = (date_vector.astype("datetime64[Y]").astype(int)) + 1970
     return days, months, years
 
 
-def get_dekad_timestamp_components(start_date, end_date):
-    timestamps = np.array(
-        [_dekad_startdate_from_date(t) for t in _dekad_timestamps(start_date, end_date)]
-    )
-    years = np.array([t.year for t in timestamps])
-    months = np.array([t.month for t in timestamps])
-    days = np.array([t.day for t in timestamps])
+def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
+    def _get_timestamps() -> np.ndarray:
+        timestamps = arr.t.values
+        years = timestamps.astype("datetime64[Y]").astype(int) + 1970
+        months = timestamps.astype("datetime64[M]").astype(int) % 12 + 1
+        days = timestamps.astype("datetime64[D]").astype("datetime64[M]")
+        days = (timestamps - days).astype(int) + 1
 
-    return days, months, years
+        components = np.stack(
+            [
+                days,
+                months,
+                years,
+            ],
+            axis=1,
+        )
 
+        return components[None, ...]  # Add batch dimension
 
-def _dekad_timestamps(begin, end):
-    """Creates a temporal sequence on a dekadal basis.
-    Returns end date for each dekad.
-    Based on: https://pytesmo.readthedocs.io/en/7.1/_modules/pytesmo/timedate/dekad.html  # NOQA
+    def _initialize_eo_inputs():
+        num_timesteps = arr.t.size
+        h, w = arr.y.size, arr.x.size
+        s1 = np.full(
+            (1, h, w, num_timesteps, len(S1_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [B, H, W, T, len(S1_BANDS)]
+        s2 = np.full(
+            (1, h, w, num_timesteps, len(S2_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [B, H, W, T, len(S2_BANDS)]
+        meteo = np.full(
+            (1, num_timesteps, len(METEO_BANDS)),
+            fill_value=NODATAVALUE,
+            dtype=np.float32,
+        )  # [B, T, len(METEO_BANDS)]
+        dem = np.full(
+            (1, h, w, len(DEM_BANDS)), fill_value=NODATAVALUE, dtype=np.float32
+        )  # [B, H, W, len(DEM_BANDS)]
 
-    Parameters
-    ----------
-    begin : datetime
-        Datetime index start date.
-    end : datetime, optional
-        Datetime index end date, set to current date if None.
+        return s1, s2, meteo, dem
 
-    Returns
-    -------
-    dtindex : pandas.DatetimeIndex
-        Dekadal datetime index.
-    """
+    # TODO: remove temporary band renaming due to old data file
+    arr["bands"] = arr.bands.where(arr.bands != "temperature_2m", "temperature")
+    arr["bands"] = arr.bands.where(arr.bands != "total_precipitation", "precipitation")
 
-    import calendar
+    # Initialize EO inputs
+    s1, s2, meteo, dem = _initialize_eo_inputs()
 
-    daterange = generate_month_sequence(begin, end)
-
-    dates = []
-
-    for i, dat in enumerate(daterange):
-        year, month = int(str(dat)[:4]), int(str(dat)[5:7])
-        lday = calendar.monthrange(year, month)[1]
-        if i == 0 and begin.day > 1:
-            if begin.day < 11:
-                if daterange.size == 1:
-                    if end.day < 11:
-                        dekads = [10]
-                    elif end.day >= 11 and end.day < 21:
-                        dekads = [10, 20]
-                    else:
-                        dekads = [10, 20, lday]
-                else:
-                    dekads = [10, 20, lday]
-            elif begin.day >= 11 and begin.day < 21:
-                if daterange.size == 1:
-                    if end.day < 21:
-                        dekads = [20]
-                    else:
-                        dekads = [20, lday]
-                else:
-                    dekads = [20, lday]
-            else:
-                dekads = [lday]
-        elif i == (len(daterange) - 1) and end.day < 21:
-            if end.day < 11:
-                dekads = [10]
-            else:
-                dekads = [10, 20]
+    # Fill EO inputs
+    for band in S2_BANDS + S1_BANDS + METEO_BANDS + DEM_BANDS:
+        if band not in arr.bands.values:
+            print(f"Band {band} not found in the input data, skipping.")
+            continue  # skip bands that are not present in the data
+        values = arr.sel(bands=band).values.astype(np.float32)
+        idx_valid = values != NODATAVALUE
+        if band in S2_BANDS:
+            s2[..., S2_BANDS.index(band)] = rearrange(
+                values, "t x y -> 1 y x t"
+            )  # TODO check if this is correct
+        elif band in S1_BANDS:
+            # convert to dB
+            idx_valid = idx_valid & (values > 0)
+            values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
+            s1[..., S1_BANDS.index(band)] = rearrange(values, "t x y -> 1 y x t")
+        elif band == "precipitation":
+            # scaling, and AgERA5 is in mm, prometheo convention expects m
+            values[idx_valid] = values[idx_valid] / (100 * 1000.0)
+            meteo[..., METEO_BANDS.index(band)] = rearrange(values[:, 0, 0], "t -> 1 t")
+        elif band == "temperature":
+            # remove scaling
+            values[idx_valid] = values[idx_valid] / 100
+            meteo[..., METEO_BANDS.index(band)] = rearrange(values[:, 0, 0], "t -> 1 t")
+        elif band in DEM_BANDS:
+            values = values[0]  # dem is not temporal
+            dem[..., DEM_BANDS.index(band)] = rearrange(values, "x y -> 1 y x")
         else:
-            dekads = [10, 20, lday]
+            raise ValueError(f"Unknown band {band}")
 
-        for j in dekads:
-            dates.append(datetime(year, month, j))
+    # Extract the latlons
+    # EPSG:4326 is the supported crs for presto
+    transformer = Transformer.from_crs(f"EPSG:{epsg}", "EPSG:4326", always_xy=True)
+    x, y = np.meshgrid(arr.x, arr.y)
+    lon, lat = transformer.transform(x, y)
+    latlon = rearrange(np.stack([lat, lon]), "c x y ->  y x c")
 
-    return dates
+    predictors_dict = {
+        "s1": rearrange(s1, "1 h w t c -> (h w) 1 1 t c"),
+        "s2": rearrange(s2, "1 h w t c -> (h w) 1 1 t c"),
+        "meteo": repeat(meteo, "1 t c -> b t c", b=x.size),
+        "latlon": rearrange(latlon, "h w c ->  (h w) 1 1 c"),
+        "dem": rearrange(dem, "1 h w c -> (h w) 1 1 c"),
+        "timestamps": repeat(_get_timestamps(), "1 t d -> b t d", b=x.size),
+    }
+
+    return Predictors(**predictors_dict)
 
 
-def _dekad_startdate_from_date(dt_in):
-    """
-    dekadal startdate that a date falls in
-    Based on: https://pytesmo.readthedocs.io/en/7.1/_modules/pytesmo/timedate/dekad.html  # NOQA
+def generate_predictor(x: Union[pd.DataFrame, xr.DataArray], epsg: int) -> Predictors:
+    if isinstance(x, xr.DataArray):
+        return _predictor_from_xarray(x, epsg)
+    raise NotImplementedError
+
+
+@functools.lru_cache(maxsize=6)
+def compile_encoder(presto_encoder: nn.Module) -> Callable:
+    """Helper function that compiles the encoder of a Presto model
+    and performs a warm-up on dummy data. The lru_cache decorator
+    ensures caching on compute nodes to be able to actually benefit
+    from the compilation process.
 
     Parameters
     ----------
-    run_dt: datetime.datetime
+    presto_encoder : nn.Module
+        Encoder part of Presto model to compile
 
-    Returns
-    -------
-    startdate: datetime.datetime
-        startdate of dekad
     """
-    if dt_in.day <= 10:
-        startdate = datetime(dt_in.year, dt_in.month, 1, 0, 0, 0)
-    if dt_in.day >= 11 and dt_in.day <= 20:
-        startdate = datetime(dt_in.year, dt_in.month, 11, 0, 0, 0)
-    if dt_in.day >= 21:
-        startdate = datetime(dt_in.year, dt_in.month, 21, 0, 0, 0)
-    return startdate
+
+    presto_encoder = torch.compile(presto_encoder)  # type: ignore
+
+    for _ in range(3):
+        presto_encoder(
+            torch.rand((1, 12, 17)),
+            torch.ones((1, 12)).long(),
+            torch.rand(1, 2),
+        )
+
+    return presto_encoder
+
+
+def run_model_inference(
+    inarr: Union[pd.DataFrame, xr.DataArray],
+    model: nn.Module,  # Wrapper
+    epsg: int = 4326,
+    batch_size: int = 8192,
+) -> Union[np.ndarray, xr.DataArray]:
+    """
+    Runs a forward pass of the model on the input data
+
+    Args:
+        inarr (xr.DataArray or pd.DataFrame): Input data as xarray DataArray or pandas DataFrame.
+        model (nn.Module): A Prometheo compatible (wrapper) model.
+        epsg (int) : EPSG code describing the coordinates.
+        batch_size (int): Batch size to be used for Presto inference.
+
+    Returns:
+        xr.DataArray or np.ndarray: Model output as xarray DataArray or numpy ndarray.
+    """
+
+    predictor = generate_predictor(inarr, epsg)
+    # fixing the pooling method to keep the function signature the same
+    # as in presto-worldcereal but this could be an input argument too
+    features = (
+        extract_features_from_model(model, predictor, batch_size, PoolingMethods.GLOBAL)
+        .cpu()
+        .numpy()
+    )
+
+    # todo - return the output tensors to the right shape, either xarray or df
+    if isinstance(inarr, pd.DataFrame):
+        return features
+    else:
+        features = rearrange(
+            features, "(y x) 1 1 1 c -> x y c", x=len(inarr.x), y=len(inarr.y)
+        )
+        features_da = xr.DataArray(
+            features,
+            dims=["x", "y", "bands"],
+            coords={"x": inarr.x, "y": inarr.y},
+        )
+
+        return features_da
