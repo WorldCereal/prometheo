@@ -106,6 +106,7 @@ def calculate_ndvi(input_array):
         warnings.filterwarnings(
             "ignore", message="invalid value encountered in true_divide"
         )
+        warnings.filterwarnings("ignore", message="invalid value encountered in divide")
         # suppress the following warning
         # RuntimeWarning: invalid value encountered in true_divide
         # for cases where near_infrared + red == 0
