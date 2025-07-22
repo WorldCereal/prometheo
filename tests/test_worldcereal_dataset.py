@@ -14,6 +14,7 @@ from prometheo.datasets.worldcereal import (
     run_model_inference,
 )
 from prometheo.models import Presto
+from prometheo.models.pooling import PoolingMethods
 from prometheo.models.presto.wrapper import (
     DEM_BANDS,
     METEO_BANDS,
@@ -548,6 +549,17 @@ class TestInference(unittest.TestCase):
         )
 
         assert presto_features.dims == ref_presto_features.dims
+
+        # Check run_model_inference with pooling method TIME
+        # This should return a 4D array with the temporal dimension preserved
+        presto_features = run_model_inference(
+            arr,
+            presto_model,
+            batch_size=512,
+            epsg=32631,
+            pooling_method=PoolingMethods.TIME,
+        )
+        assert presto_features.shape == (100, 100, 12, 128)
 
 
 if __name__ == "__main__":

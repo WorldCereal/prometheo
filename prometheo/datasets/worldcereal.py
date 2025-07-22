@@ -705,25 +705,37 @@ def run_model_inference(
     model: nn.Module,  # Wrapper
     epsg: int = 4326,
     batch_size: int = 8192,
+    pooling_method: PoolingMethods = PoolingMethods.GLOBAL,
 ) -> Union[np.ndarray, xr.DataArray]:
     """
-    Runs a forward pass of the model on the input data
+    Runs a forward pass of the model on the input data.
 
-    Args:
-        inarr (xr.DataArray or pd.DataFrame): Input data as xarray DataArray or pandas DataFrame.
-        model (nn.Module): A Prometheo compatible (wrapper) model.
-        epsg (int) : EPSG code describing the coordinates.
-        batch_size (int): Batch size to be used for Presto inference.
+    Parameters
+    ----------
+    inarr : xr.DataArray or pd.DataFrame
+        Input data as xarray DataArray or pandas DataFrame.
+    model : nn.Module
+        A Prometheo compatible (wrapper) model.
+    epsg : int
+        EPSG code describing the coordinates.
+    batch_size : int
+        Batch size to be used for Presto inference.
+    pooling_method : PoolingMethods
+        Pooling method to be used for the model output.
+        If PoolingMethods.GLOBAL, the output will be a single feature vector per pixel.
+        If PoolingMethods.TIME, the output will retain the temporal dimension.
 
-    Returns:
-        xr.DataArray or np.ndarray: Model output as xarray DataArray or numpy ndarray.
+    Returns
+    -------
+    xr.DataArray or np.ndarray
+        Model output as xarray DataArray or numpy ndarray.
     """
 
     predictor = generate_predictor(inarr, epsg)
     # fixing the pooling method to keep the function signature the same
     # as in presto-worldcereal but this could be an input argument too
     features = (
-        extract_features_from_model(model, predictor, batch_size, PoolingMethods.GLOBAL)
+        extract_features_from_model(model, predictor, batch_size, pooling_method)
         .cpu()
         .numpy()
     )
@@ -732,13 +744,29 @@ def run_model_inference(
     if isinstance(inarr, pd.DataFrame):
         return features
     else:
-        features = rearrange(
-            features, "(y x) 1 1 1 c -> x y c", x=len(inarr.x), y=len(inarr.y)
-        )
-        features_da = xr.DataArray(
-            features,
-            dims=["x", "y", "bands"],
-            coords={"x": inarr.x, "y": inarr.y},
-        )
-
+        if pooling_method == PoolingMethods.TIME:
+            # If pooling method is TIME, we need to keep the time dimension
+            features = rearrange(
+                features,
+                "(y x) 1 1 t c -> x y t c",
+                x=len(inarr.x),
+                y=len(inarr.y),
+                t=len(inarr.t),
+            )
+            features_da = xr.DataArray(
+                features,
+                dims=["x", "y", "t", "bands"],
+                coords={"x": inarr.x, "y": inarr.y, "t": inarr.t},
+            )
+        else:
+            # If pooling method is GLOBAL, we collapse the time dimension
+            features = rearrange(
+                features,
+                "(y x) 1 1 1 c -> x y c",
+                x=len(inarr.x),
+                y=len(inarr.y),
+            )
+            features_da = xr.DataArray(
+                features, dims=["x", "y", "bands"], coords={"x": inarr.x, "y": inarr.y}
+            )
         return features_da
