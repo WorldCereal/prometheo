@@ -1,7 +1,7 @@
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Union
+from typing import List, Optional, Union
 
 import torch
 from loguru import logger
@@ -30,6 +30,8 @@ def _train_loop(
     loss_fn: torch.nn.Module,
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LRScheduler,
+    freeze_layers: Optional[List[str]] = None,
+    unfreeze_epoch: Optional[int] = None,
 ):
     """Perform the training loop for fine-tuning a model.
 
@@ -41,14 +43,18 @@ def _train_loop(
         The data loader for the training dataset.
     val_dl : torch.utils.data.DataLoader
         The data loader for the validation dataset.
-    hyperparams : dict
-        A dictionary containing hyperparameters for training.
+    hyperparams : Hyperparams
+        A dataclass containing hyperparameters for training.
     loss_fn : torch.nn.Module
         The loss function to be used for training.
     optimizer : torch.optim.Optimizer
         The optimizer used for updating the model's parameters.
     scheduler : torch.optim.lr_scheduler.LRScheduler
         The learning rate scheduler used for adjusting the learning rate during training.
+    freeze_layers : Optional[List[str]], optional
+        A list of layer names or patterns to freeze during training. These layers will remain frozen unless explicitly unfrozen.
+    unfreeze_epoch : Optional[int], optional
+        The epoch at which to start unfreezing layers specified in `freeze_layers`. Layers originally frozen will remain frozen.
 
     Returns
     -------
@@ -61,8 +67,30 @@ def _train_loop(
     best_model_dict = None
     epochs_since_improvement = 0
 
+    # Track layers that were originally frozen
+    originally_frozen_layers = set()
+
+    # Freeze specified layers initially
+    if freeze_layers:
+        for name, param in model.named_parameters():
+            if any(layer in name for layer in freeze_layers):
+                if not param.requires_grad:
+                    originally_frozen_layers.add(name)
+                param.requires_grad = False
+                logger.info(f"Freezing layer: {name}")
+
     for epoch in (pbar := tqdm(range(hyperparams.max_epochs), desc="Finetuning")):
         model.train()
+
+        # Unfreezing logic
+        if freeze_layers and epoch == unfreeze_epoch:
+            for name, param in model.named_parameters():
+                if name not in originally_frozen_layers and any(
+                    layer in name for layer in freeze_layers
+                ):
+                    param.requires_grad = True
+                    logger.info(f"Unfreezing layer: {name}")
+
         epoch_train_loss = 0.0
 
         for batch in tqdm(train_dl, desc="Training", leave=False):
@@ -202,6 +230,8 @@ def run_finetuning(
     hyperparams: Hyperparams = Hyperparams(),
     seed: int = DEFAULT_SEED,
     setup_logging: bool = True,
+    freeze_layers: Optional[List[str]] = None,
+    unfreeze_epoch: Optional[int] = None,
 ):
     """Runs the finetuning process.
 
@@ -229,6 +259,11 @@ def run_finetuning(
         The random seed for reproducibility. Default is DEFAULT_SEED.
     setup_logging : bool, optional
         Whether to set up logging for the finetuning process. Default is True.
+    freeze_layers : Optional[List[str]], optional
+        A list of layer names or patterns to freeze during training. These layers will remain frozen unless explicitly unfrozen.
+    unfreeze_epoch : Optional[int], optional
+        The epoch at which to start unfreezing layers specified in `freeze_layers`. Layers originally frozen will remain frozen.
+
     Returns
     -------
     torch.nn.Module
@@ -265,7 +300,15 @@ def run_finetuning(
 
     # Run the finetuning loop
     finetuned_model = _train_loop(
-        model, train_dl, val_dl, hyperparams, loss_fn, optimizer, scheduler
+        model,
+        train_dl,
+        val_dl,
+        hyperparams,
+        loss_fn,
+        optimizer,
+        scheduler,
+        freeze_layers=freeze_layers,
+        unfreeze_epoch=unfreeze_epoch,
     )
 
     # Save the best model
