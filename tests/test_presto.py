@@ -17,7 +17,7 @@ class TestPresto(unittest.TestCase):
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
-            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            meteo=np.random.rand(b, h, w, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, h, w, 2),
             label=np.ones((b, 1, 1, 1, 1)),
@@ -79,7 +79,7 @@ class TestPresto(unittest.TestCase):
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
-            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            meteo=np.random.rand(b, h, w, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, h, w, 2),
             label=np.ones((b, h, w, t, 1)),
@@ -98,7 +98,7 @@ class TestPresto(unittest.TestCase):
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
-            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            meteo=np.random.rand(b, h, w, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, h, w, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
@@ -116,7 +116,7 @@ class TestPresto(unittest.TestCase):
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
-            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            meteo=np.random.rand(b, h, w, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, h, w, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
@@ -136,7 +136,7 @@ class TestPresto(unittest.TestCase):
         x = Predictors(
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)),
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)),
-            meteo=np.random.rand(b, t, len(METEO_BANDS)),
+            meteo=np.random.rand(b, h, w, t, len(METEO_BANDS)),
             dem=np.random.rand(b, h, w, len(DEM_BANDS)),
             latlon=np.random.rand(b, h, w, 2),
             timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
