@@ -113,7 +113,7 @@ def _train_loop(
             epoch_train_loss += loss.item()
             loss.backward()
             optimizer.step()
-        scheduler.step()
+
         train_loss.append(epoch_train_loss / len(train_dl))
 
         model.eval()
@@ -141,6 +141,11 @@ def _train_loop(
         val_targets = torch.cat(all_y)
         current_val_loss = loss_fn(val_preds, val_targets).item()
         val_loss.append(current_val_loss)
+
+        if isinstance(scheduler, lr_scheduler.ReduceLROnPlateau):
+            scheduler.step(current_val_loss)
+        else:
+            scheduler.step()
 
         if best_loss is None:
             best_loss = val_loss[-1]
