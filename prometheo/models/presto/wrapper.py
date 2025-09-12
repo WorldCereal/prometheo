@@ -203,11 +203,10 @@ def dataset_to_model(x: Predictors):
         mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
 
     if x.meteo is not None:
-        meteo_with_hw = repeat(
-            x.meteo[:, :, mapper["meteo"]["predictor"]], "b t d -> b h w t d", h=h, w=w
-        )
-        output[:, :, :, :, mapper["meteo"]["presto"]] = meteo_with_hw
-        mask[:, :, :, :, mapper["meteo"]["presto"]] = meteo_with_hw == NODATAVALUE
+        meteo_hw = x.meteo[:, :, :, :, :]
+        meteo_hw_bands = meteo_hw[:, :, :, :, mapper["meteo"]["predictor"]]
+        output[:, :, :, :, mapper["meteo"]["presto"]] = meteo_hw_bands
+        mask[:, :, :, :, mapper["meteo"]["presto"]] = meteo_hw_bands == NODATAVALUE
 
     dynamic_world = np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
 
