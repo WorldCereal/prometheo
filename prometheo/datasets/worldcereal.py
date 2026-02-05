@@ -154,7 +154,7 @@ class WorldCerealDataset(Dataset):
                             (available_timesteps - self.num_timesteps // 2),
                         ),
                         1,
-                    )
+                    )[0]
                 )
             else:
                 # Randomly shift the center point but make sure the resulting range
