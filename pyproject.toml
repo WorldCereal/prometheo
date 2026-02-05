@@ -30,6 +30,7 @@ dependencies = [
   "scikit-learn",
   "fastparquet",
   "h5netcdf>=1.3.0",
+  "h5py",
   "matplotlib>=3.7.5",
   "rtree>=1.1.0"
   ]
