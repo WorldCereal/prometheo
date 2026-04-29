@@ -522,7 +522,12 @@ class TestInference(unittest.TestCase):
                 )
         presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
 
-        Features were regenerated at commit 6f0f7d6 since this fixed a bug with dtypes
+        Features were regenerated at commit 6f0f7d6 since this fixed a bug with dtypes.
+        Features were regenerated again on the ndvi-masking-fix branch because the
+        NDVI mask fix in normalize() correctly drops NDVI tokens at masked S2
+        timesteps; previously they were left "valid" with a phantom NDVI=0, so the
+        encoder's pooled embedding differs slightly post-fix for any input with
+        cloud-masked S2 timesteps.
         """
         arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
 
