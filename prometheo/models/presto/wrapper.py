@@ -137,15 +137,32 @@ def normalize(x: np.ndarray, mask: np.ndarray):
     else:
         x = (x + torch.tensor(BANDS_ADD)) / torch.tensor(BANDS_DIV)
 
-    ndvi, ndvi_mask = calculate_ndvi(x)
+    ndvi, _ = calculate_ndvi(x)
+
+    # Derive the NDVI mask from the upstream B4 / B8 masks rather than
+    # recomputing it from the (already-normalized) values. The recomputed
+    # ndvi_mask checks `band == NODATAVALUE` on values that have been
+    # divided by 10000, so masked positions look "valid" with NDVI = 0.
+    b4_idx, b8_idx, ndvi_idx = (
+        BANDS.index("B4"),
+        BANDS.index("B8"),
+        BANDS.index("NDVI"),
+    )
+    if isinstance(x, np.ndarray):
+        ndvi_mask_from_input = np.logical_or(
+            mask[..., b4_idx], mask[..., b8_idx]
+        )
+    else:
+        ndvi_mask_from_input = torch.logical_or(
+            mask[..., b4_idx].bool(), mask[..., b8_idx].bool()
+        )
 
     if len(x.shape) == 2:
-        x[:, BANDS.index("NDVI")] = ndvi
-        mask[:, BANDS.index("NDVI")] = ndvi_mask
-
+        x[:, ndvi_idx] = ndvi
+        mask[:, ndvi_idx] = ndvi_mask_from_input
     else:
-        x[:, :, BANDS.index("NDVI")] = ndvi
-        mask[:, :, BANDS.index("NDVI")] = ndvi_mask
+        x[:, :, ndvi_idx] = ndvi
+        mask[:, :, ndvi_idx] = ndvi_mask_from_input
     return x, mask
 
 
