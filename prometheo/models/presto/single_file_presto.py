@@ -310,6 +310,7 @@ class Encoder(nn.Module):
         mlp_ratio=2,
         num_heads=8,
         max_sequence_length=24,
+        latlon_mask_prob: float = 0.0,
     ):
         super().__init__()
 
@@ -335,6 +336,14 @@ class Encoder(nn.Module):
             num_embeddings=NUM_DYNAMIC_WORLD_CLASSES + 1, embedding_dim=embedding_size
         )
         self.latlon_embed = nn.Linear(3, embedding_size)
+
+        # Location null-masking ("modality dropout" on lat/lon). During training,
+        # with probability ``latlon_mask_prob`` the per-sample latlon token is
+        # replaced by ``null_latlon`` — a learned, location-INDEPENDENT embedding —
+        # so the model must predict from spectral/temporal evidence for those
+        # samples. Default 0.0 = no behaviour change.
+        self.latlon_mask_prob = latlon_mask_prob
+        self.null_latlon = nn.Parameter(torch.zeros(embedding_size))
 
         self.blocks = nn.ModuleList(
             [
@@ -547,6 +556,18 @@ class Encoder(nn.Module):
         x, orig_indices, upd_mask = self.mask_tokens(x, mask)
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
+        latlon_mask_prob = getattr(self, "latlon_mask_prob", 0.0)
+        if self.training and latlon_mask_prob > 0.0:
+            # Per-sample null-masking of the location token: with prob
+            # latlon_mask_prob, swap in the learned location-independent
+            # null_latlon so the model cannot rely on coordinates for those
+            # samples (breaks the location shortcut). Eval/inference is untouched.
+            drop = (
+                torch.rand(latlon_tokens.shape[0], device=latlon_tokens.device)
+                < latlon_mask_prob
+            )
+            null = self.null_latlon.to(latlon_tokens.dtype).view(1, 1, -1)
+            latlon_tokens = torch.where(drop.view(-1, 1, 1), null, latlon_tokens)
         x = torch.cat((latlon_tokens, x), dim=1)
         upd_mask = torch.cat(
             (torch.zeros(x.shape[0])[:, None].to(device), upd_mask), dim=1
