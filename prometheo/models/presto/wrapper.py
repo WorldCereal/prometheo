@@ -278,11 +278,24 @@ def load_presto_weights(
         presto_model_layers = torch.load(
             io.BytesIO(response.content), map_location=device
         )
-        presto_model.load_state_dict(presto_model_layers, strict=strict)
     else:
-        presto_model.load_state_dict(
-            torch.load(weights_path, map_location=device), strict=strict
-        )
+        presto_model_layers = torch.load(weights_path, map_location=device)
+
+    missing, unexpected = presto_model.load_state_dict(
+        presto_model_layers, strict=False
+    )
+    if strict:
+        # `null_latlon` is a new, optional learnable token (added for lat/lon
+        # null-masking). It is intentionally absent from older checkpoints and is
+        # kept at its fresh initialisation, so tolerate only that missing key —
+        # strict loading still flags every other missing/unexpected key.
+        missing = [k for k in missing if not k.endswith("null_latlon")]
+        if missing or unexpected:
+            raise RuntimeError(
+                "Error(s) in loading state_dict for "
+                f"{presto_model.__class__.__name__}: "
+                f"Missing key(s): {missing}; Unexpected key(s): {unexpected}."
+            )
 
     return presto_model
 
