@@ -306,6 +306,7 @@ class PretrainedPrestoWrapper(nn.Module):
         num_outputs: Optional[int] = None,
         regression: Optional[bool] = None,
         pretrained_model_path: Optional[Union[str, Path]] = None,
+        latlon_mask_prob: float = 0.0,
     ):
         """Initialize the Presto model through a prometheo wrapper.
 
@@ -319,6 +320,8 @@ class PretrainedPrestoWrapper(nn.Module):
             Needs to be specified when num_outputs is not None.
         pretrained_model_path : Union[str, Path], optional
             The path to the pretrained model, by default None.
+        latlon_mask_prob : float, optional
+            Probability of replacing the lat/lon token with a null embedding during training.
 
         Raises
         ------
@@ -329,7 +332,7 @@ class PretrainedPrestoWrapper(nn.Module):
         super().__init__()
 
         # Construct original Presto model with the default configuration
-        presto = Presto.construct()
+        presto = Presto.construct(latlon_mask_prob=latlon_mask_prob)
 
         # Load pretrained model before making any adaptations
         if pretrained_model_path is not None:

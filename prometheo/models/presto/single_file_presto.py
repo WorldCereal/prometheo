@@ -908,6 +908,7 @@ class Presto(nn.Module):
         decoder_depth=2,
         decoder_num_heads=8,
         max_sequence_length=24,
+        latlon_mask_prob: float = 0.0,
     ):
         encoder = Encoder(
             embedding_size=encoder_embedding_size,
@@ -917,6 +918,7 @@ class Presto(nn.Module):
             mlp_ratio=mlp_ratio,
             num_heads=encoder_num_heads,
             max_sequence_length=max_sequence_length,
+            latlon_mask_prob=latlon_mask_prob,
         )
         decoder = Decoder(
             channel_embeddings=encoder.channel_embed,
