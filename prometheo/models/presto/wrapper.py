@@ -369,6 +369,8 @@ class PretrainedPrestoWrapper(nn.Module):
 
         """
 
+        if not isinstance(x, Predictors):
+            x = Predictors(*x)
         s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w = (
             dataset_to_model(x)
         )
@@ -388,6 +390,17 @@ class PretrainedPrestoWrapper(nn.Module):
             raise ValueError("Presto requires input timestamps")
 
         model_device = self.encoder.pos_embed.device
+
+        #code to pickle args, allowing to export to onnx easily
+        # args = (to_torchtensor(s1_s2_era5_srtm, device=model_device).float(), dict(
+        #     dynamic_world=to_torchtensor(dynamic_world, device=model_device).long(),
+        #     latlons=to_torchtensor(latlon, device=model_device).float(),
+        #     mask=to_torchtensor(mask, device=model_device).long(),
+        #     # presto wants 0 indexed months, not 1 indexed months
+        #     month=to_torchtensor(timestamps[:, :, 1] - 1, device=model_device),
+        #     eval_pooling=eval_pooling.value if eval_pooling is not None else None))
+        # import pickle
+        # pickle.dump(args, open("presto_args_global.pkl", "wb"))
         embeddings = self.encoder(
             x=to_torchtensor(s1_s2_era5_srtm, device=model_device).float(),
             dynamic_world=to_torchtensor(dynamic_world, device=model_device).long(),

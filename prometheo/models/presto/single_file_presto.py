@@ -407,7 +407,7 @@ class Encoder(nn.Module):
         # https://stackoverflow.com/a/68621610/2332296
         # move all non-masked values to the front of their rows
         sorted_mask, indices = torch.sort(
-            (~mask).int(), dim=1, descending=True, stable=True
+            (~mask).int(), dim=1, descending=True
         )
         x = x.gather(1, indices[:, :, None].expand_as(x))
         # set masked values to 0 (not really necessary since we'll ignore them anyway)

@@ -2,6 +2,7 @@ import unittest
 
 import numpy as np
 import pandas as pd
+import torch
 import xarray as xr
 from torch.utils.data import DataLoader
 
@@ -25,6 +26,10 @@ from prometheo.models.presto.wrapper import (
 )
 from prometheo.predictors import collate_fn
 from prometheo.utils import data_dir
+
+from prometheo.prometheo.datasets.worldcereal import generate_predictor
+from prometheo.prometheo.models.presto.wrapper import dataset_to_model
+from prometheo.prometheo.predictors import to_torchtensor, Predictors
 
 models_to_test = [Presto]
 
@@ -509,6 +514,142 @@ class TestTimeUtilities(unittest.TestCase):
 
 
 class TestInference(unittest.TestCase):
+
+    def test_onnx_load(self):
+        import onnxruntime as rt  # noqa: E402
+
+        sess = rt.InferenceSession("presto_new.onnx", providers=rt.get_available_providers())
+        meta = sess.get_modelmeta()
+        print(meta)
+        inputs = sess.get_inputs()
+        print(inputs)
+        print([(i.name, i.shape) for i in inputs])
+        outputs = sess.get_outputs()
+        print(outputs)
+
+    def test_onnx_export(self):
+        arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
+        model_url = str(data_dir / "finetuned_presto_model.pt")
+        presto_model = Presto()
+        presto_model = load_presto_weights(presto_model, model_url)
+        predictor = generate_predictor(arr, 32631)
+        s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w = (
+            dataset_to_model(predictor)
+        )
+
+        x = to_torchtensor(s1_s2_era5_srtm).float()
+        dynamic_world = to_torchtensor(dynamic_world).byte()
+        latlons = to_torchtensor(latlon).float()
+        mask = to_torchtensor(mask).byte()
+        # presto wants 0 indexed months, not 1 indexed months
+        month = to_torchtensor(timestamps[:, :, 1] - 1)
+        bla = (x, "global",dict(dynamic_world=dynamic_world, latlons=latlons,mask=mask, month=month))
+
+        import pickle
+        presto_args = pickle.load(open("presto_args_worldcereal.pkl","rb"))
+
+        input_names = ["x", "dynamic_world", "latlons", "mask", "month"]
+
+        from torch.export.dynamic_shapes import Dim
+        dynamic = {"x":(Dim.DYNAMIC,Dim.STATIC, Dim.STATIC),"dynamic_world":(Dim.DYNAMIC,Dim.STATIC), "latlons":(Dim.DYNAMIC,Dim.STATIC), "mask": (Dim.DYNAMIC,Dim.STATIC, Dim.STATIC), "month":(Dim.DYNAMIC,Dim.STATIC), "eval_pooling":None}
+        dynamic_axes = {"x": {0:"batch_size"}, "dynamic_world": {0:"batch_size"},
+                   "latlons": {0:"batch_size"}, "mask": {0:"batch_size"},
+                   "month": {0:"batch_size"}}
+
+        presto_args[1]['eval_pooling'] = 'global'
+        #if using dyname=True => dynamic_shapes = dynamic
+        onnx_program = torch.onnx.export(presto_model.encoder,presto_args, f="presto_global_shorts.onnx", input_names=input_names,dynamic_axes=dynamic_axes, dynamo=False,verbose=True)
+
+    def test_quantize_model(self):
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+
+        quantize_dynamic(
+            model_input="presto_global_shorts.onnx",
+            model_output="presto_global_shorts.int8.dynamic.onnx",
+            weight_type=QuantType.QInt8,  # int8 weights
+            per_channel=True,  # better accuracy for many linear layers
+            reduce_range=False,
+        )
+
+    def test_run_model_inference_onnx(self):
+        """Test the run_model_inference function. Based on reference features
+        generated using the following code at commit 6f0f7d6 :
+
+        arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
+        model_url = str(data_dir / "finetuned_presto_model.pt")
+                presto_features = get_presto_features(
+                    arr, model_url, batch_size=512, epsg=32631
+                )
+        presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
+
+        Features were regenerated at commit 6f0f7d6 since this fixed a bug with dtypes
+        """
+        arr = xr.open_dataarray(data_dir / "test_inference_array.nc")
+
+        # Load a pretrained Presto model
+        model_url = str(data_dir / "finetuned_presto_model.pt")
+
+
+        from prometheo.prometheo.models.presto.wrapper_onnx import PretrainedPrestoWrapperONNX
+        presto_model = PretrainedPrestoWrapperONNX()
+
+        predictor = generate_predictor(arr, 32631)
+        all_features = []
+        #256 is the largest batch size that still works, after that, the output shape along batch dimension is smaller than the input
+        for batch in predictor.as_batches(256):
+            all_features.append(presto_model.forward(batch,PoolingMethods.GLOBAL))
+
+        features = np.concat(all_features)
+
+        inarr = arr
+
+        pooling_method = PoolingMethods.GLOBAL
+        from einops import rearrange
+
+        if pooling_method == PoolingMethods.TIME:
+            # If pooling method is TIME, we need to keep the time dimension
+            features = rearrange(
+                features,
+                "(y x) 1 1 t c -> x y t c",
+                x=len(inarr.x),
+                y=len(inarr.y),
+                t=len(inarr.t),
+            )
+            presto_features = xr.DataArray(
+                features,
+                dims=["x", "y", "t", "bands"],
+                coords={"x": inarr.x, "y": inarr.y, "t": inarr.t},
+            )
+        else:
+            # If pooling method is GLOBAL, we collapse the time dimension
+            features = rearrange(
+                features,
+                "(y x) 1 1 1 c -> x y c",
+                x=len(inarr.x),
+                y=len(inarr.y),
+            )
+            presto_features = xr.DataArray(
+                features, dims=["x", "y", "bands"], coords={"x": inarr.x, "y": inarr.y}
+            )
+        # Uncomment to regenerate ref features
+        # presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
+
+        # Load ref features
+        ref_presto_features = xr.open_dataarray(
+            data_dir / "test_presto_inference_features.nc"
+        )
+
+        xr.testing.assert_allclose(
+            presto_features,
+            ref_presto_features,
+            rtol=1e-04,
+            atol=1e-04,
+        )
+
+        assert presto_features.dims == ref_presto_features.dims
+
+
+
     def test_run_model_inference(self):
         """Test the run_model_inference function. Based on reference features
         generated using the following code at commit 6f0f7d6 :
@@ -532,6 +673,8 @@ class TestInference(unittest.TestCase):
         presto_features = run_model_inference(
             arr, presto_model, batch_size=512, epsg=32631
         )
+
+
 
         # Uncomment to regenerate ref features
         # presto_features.to_netcdf(data_dir / "test_presto_inference_features.nc")
