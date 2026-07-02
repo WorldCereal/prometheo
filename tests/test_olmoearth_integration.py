@@ -7,7 +7,7 @@ from einops import repeat
 
 from prometheo.models import OlmoEarth
 from prometheo.models.pooling import PoolingMethods
-from prometheo.predictors import S1_BANDS, S2_BANDS, Predictors
+from prometheo.predictors import DEM_BANDS, S1_BANDS, S2_BANDS, Predictors
 
 
 @unittest.skipIf(
@@ -20,6 +20,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
         return Predictors(
             s2=np.random.rand(b, h, w, t, len(S2_BANDS)).astype("float32"),
             s1=np.random.rand(b, h, w, t, len(S1_BANDS)).astype("float32"),
+            dem=np.random.rand(b, h, w, len(DEM_BANDS)).astype("float32"),
             timestamps=repeat(
                 np.array([[1, month + 1, 2024] for month in range(t)], dtype="int64"),
                 "t d -> b t d",

@@ -7,7 +7,14 @@ import torch
 from torch import nn
 
 from prometheo.models.pooling import PoolingMethods
-from prometheo.predictors import NODATAVALUE, S1_BANDS, S2_BANDS, Predictors, to_torchtensor
+from prometheo.predictors import (
+    DEM_BANDS,
+    NODATAVALUE,
+    S1_BANDS,
+    S2_BANDS,
+    Predictors,
+    to_torchtensor,
+)
 from prometheo.utils import device
 
 DEFAULT_MODEL_ID = "OLMOEARTH_V1_2_NANO"
@@ -26,6 +33,7 @@ S2_OLMOEARTH_TO_PROMETHEO = [
     ("B09", "B9"),
 ]
 S1_OLMOEARTH_TO_PROMETHEO = [("vv", "VV"), ("vh", "VH")]
+SRTM_OLMOEARTH_TO_PROMETHEO = [("srtm", "elevation")]
 
 
 def _missing_dependency_error() -> ImportError:
@@ -104,6 +112,14 @@ def dataset_to_olmoearth_sample(x: Predictors, model_device: torch.device = devi
         sample_kwargs["sentinel1"] = to_torchtensor(s1, model_device).float()
         sample_kwargs["sentinel1_mask"] = to_torchtensor(s1_mask, model_device).long()
 
+    if x.dem is not None:
+        srtm_indices = [DEM_BANDS.index(prometheo) for _, prometheo in SRTM_OLMOEARTH_TO_PROMETHEO]
+        srtm = np.asarray(x.dem)[..., srtm_indices].astype(np.float32)
+        srtm_mask = np.where(srtm == NODATAVALUE, 3, 0).astype(np.int64)
+        srtm = normalizer.normalize(Modality.SRTM, srtm)
+        sample_kwargs["srtm"] = to_torchtensor(srtm, model_device).float()
+        sample_kwargs["srtm_mask"] = to_torchtensor(srtm_mask, model_device).long()
+
     return MaskedOlmoEarthSample(**sample_kwargs)
 
 
@@ -179,7 +195,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         if isinstance(encoder_output, dict) and "tokens_and_masks" in encoder_output:
             tokens_and_masks = encoder_output["tokens_and_masks"]
             modality_embeddings = []
-            for modality_name in ["sentinel2_l2a", "sentinel1"]:
+            for modality_name in ["sentinel2_l2a", "sentinel1", "srtm"]:
                 modality_tokens = getattr(tokens_and_masks, modality_name, None)
                 if modality_tokens is None:
                     continue
@@ -188,8 +204,15 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                     modality_tokens = modality_tokens.mean(dim=4)
                 modality_embeddings.append(modality_tokens)
             if modality_embeddings:
+                max_timesteps = max(tokens.shape[3] for tokens in modality_embeddings)
+                modality_embeddings = [
+                    tokens.expand(*tokens.shape[:3], max_timesteps, tokens.shape[-1])
+                    if tokens.shape[3] == 1 and max_timesteps > 1
+                    else tokens
+                    for tokens in modality_embeddings
+                ]
                 return torch.stack(modality_embeddings, dim=0).mean(dim=0)
-            raise ValueError("OlmoEarth encoder output did not include supported S1/S2 tokens")
+            raise ValueError("OlmoEarth encoder output did not include supported S1/S2/SRTM tokens")
         if isinstance(encoder_output, tuple):
             return encoder_output[0]
         return encoder_output

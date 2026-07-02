@@ -13,12 +13,19 @@ from prometheo.models.olmoearth.wrapper import (
     dataset_to_olmoearth_sample,
 )
 from prometheo.models.pooling import PoolingMethods
-from prometheo.predictors import NODATAVALUE, S1_BANDS, S2_BANDS, Predictors
+from prometheo.predictors import (
+    DEM_BANDS,
+    NODATAVALUE,
+    S1_BANDS,
+    S2_BANDS,
+    Predictors,
+)
 
 
 class FakeModality:
     SENTINEL2_L2A = "sentinel2_l2a"
     SENTINEL1 = "sentinel1"
+    SRTM = "srtm"
 
 
 class FakeNormalizer:
@@ -44,7 +51,13 @@ class FakeEncoder:
         b, h, w, t, _ = sample.sentinel2_l2a.shape
         base = torch.arange(b * h * w * t * self.embedding_size, dtype=torch.float32)
         tokens = base.reshape(b, h, w, t, 1, self.embedding_size)
-        return {"tokens_and_masks": types.SimpleNamespace(sentinel2_l2a=tokens, sentinel1=tokens + 2)}
+        return {
+            "tokens_and_masks": types.SimpleNamespace(
+                sentinel2_l2a=tokens,
+                sentinel1=tokens + 2,
+                srtm=tokens[:, :, :, :1, 0, :] + 4,
+            )
+        }
 
 
 class FakeModel:
@@ -106,10 +119,15 @@ class TestOlmoEarthAdapter(OlmoEarthDependencyPatch):
         s1 = np.zeros((b, h, w, t, len(S1_BANDS)), dtype=np.float32)
         s1[..., S1_BANDS.index("VV")] = 10
         s1[..., S1_BANDS.index("VH")] = 20
+        dem = np.zeros((b, h, w, len(DEM_BANDS)), dtype=np.float32)
+        dem[..., DEM_BANDS.index("elevation")] = 100
+        dem[..., DEM_BANDS.index("slope")] = 5
+        dem[:, :, :, DEM_BANDS.index("elevation")] = NODATAVALUE
         timestamps = np.array([[[1, 1, 2024], [1, 12, 2024]]])
 
         sample = dataset_to_olmoearth_sample(
-            Predictors(s1=s1, s2=s2, timestamps=timestamps), model_device=torch.device("cpu")
+            Predictors(s1=s1, s2=s2, dem=dem, timestamps=timestamps),
+            model_device=torch.device("cpu"),
         )
 
         self.assertEqual(sample.sentinel2_l2a.shape, (b, h, w, t, 12))
@@ -120,6 +138,8 @@ class TestOlmoEarthAdapter(OlmoEarthDependencyPatch):
         self.assertEqual(sample.sentinel2_l2a[0, 0, 0, 0].tolist(), expected_first_timestep)
         self.assertEqual(sample.sentinel2_l2a_mask[0, 0, 0].tolist(), [0, 3])
         self.assertEqual(sample.sentinel1[0, 0, 0, 0].tolist(), [11, 21])
+        self.assertEqual(sample.srtm.shape, (b, h, w, 1))
+        self.assertEqual(sample.srtm_mask[0, 0, 0].tolist(), [3])
         self.assertEqual(sample.timestamps[0, :, 1].tolist(), [0, 11])
 
     def test_wrapper_loads_latest_nano_by_default_and_pools_global_outputs(self):

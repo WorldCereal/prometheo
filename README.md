@@ -70,7 +70,7 @@ model = OlmoEarth()  # defaults to upstream OLMOEARTH_V1_2_NANO
 emb = model(sample)  # sample must include Sentinel-2 and timestamps
 ```
 
-Current OlmoEarth support is intentionally narrower than Presto: it supports PromethEO `s2` plus optional `s1` and requires `timestamps`. `dem`, `meteo`, `latlon`, Landsat, and derived-map modalities are not mapped yet. Outputs follow PromethEO's `[B, H, W, T|1, D]` convention, where `H` and `W` are OlmoEarth patch-token grid dimensions rather than original input pixels.
+Current OlmoEarth support is intentionally narrower than Presto: it supports PromethEO `s2` plus optional `s1` and `dem` (elevation mapped to SRTM), and requires `timestamps`. `meteo`, `latlon`, Landsat, and derived-map modalities are not mapped yet. Outputs follow PromethEO's `[B, H, W, T|1, D]` convention, where `H` and `W` are OlmoEarth patch-token grid dimensions rather than original input pixels.
 
 ## Add Your Own Dataset
 Return a `Predictors` object in `__getitem__` – nothing else required.

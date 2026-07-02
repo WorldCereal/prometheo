@@ -104,7 +104,7 @@ olmoearth = [
 
 - Use S1 mapping `vv -> VV`, `vh -> VH`.
 - Do not support Landsat initially because `Predictors` has no Landsat field.
-- Treat `dem` cautiously: PromethEO has elevation and slope, whereas OlmoEarth SRTM has one `srtm` band. Only map elevation if we decide to include SRTM; otherwise start with S1/S2 only.
+- Map PromethEO `dem` elevation to OlmoEarth `srtm`; PromethEO `slope` has no direct OlmoEarth SRTM band and is intentionally ignored.
 
 ### Phase 3: output and tests
 
@@ -121,4 +121,4 @@ olmoearth = [
 
 ## Recommendation
 
-Implement a thin optional wrapper first, defaulting to `OLMOEARTH_V1_2_NANO` and supporting S1/S2 plus timestamps. Keep Landsat and derived-map support out of the first pass because PromethEO's `Predictors` schema does not currently represent them. The integration is medium-sized but low-risk if it remains optional and has dependency-free unit tests around the adapter.
+Implement a thin optional wrapper first, defaulting to `OLMOEARTH_V1_2_NANO` and supporting S2, optional S1, optional DEM elevation-as-SRTM, and timestamps. Keep Landsat and derived-map support out of the first pass because PromethEO's `Predictors` schema does not currently represent them. The integration is medium-sized but low-risk if it remains optional and has dependency-free unit tests around the adapter.
