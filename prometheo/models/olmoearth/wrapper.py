@@ -150,6 +150,9 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         x: Predictors,
         eval_pooling: Union[PoolingMethods, None] = PoolingMethods.GLOBAL,
     ):
+        if x.timestamps is None:
+            raise ValueError("OlmoEarth requires input timestamps")
+
         if x.label is not None:
             if x.label.shape[3] == x.timestamps.shape[1]:
                 eval_pooling = PoolingMethods.TIME

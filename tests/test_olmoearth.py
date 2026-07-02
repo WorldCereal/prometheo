@@ -1,6 +1,7 @@
 import sys
 import types
 import unittest
+from typing import ClassVar
 
 import numpy as np
 import torch
@@ -21,7 +22,7 @@ class FakeModality:
 
 
 class FakeNormalizer:
-    calls = []
+    calls: ClassVar[list[tuple[object, np.ndarray]]] = []
 
     def __init__(self, std_multiplier):
         self.std_multiplier = std_multiplier
