@@ -310,11 +310,19 @@ class Encoder(nn.Module):
         mlp_ratio=2,
         num_heads=8,
         max_sequence_length=24,
+        latlon_dropout: float = 0.0,
     ):
         super().__init__()
 
         self.band_groups = BANDS_GROUPS_IDX
         self.embedding_size = embedding_size
+        # probability with which the latlon token is masked out during training.
+        # if 0, the latlon token is always kept.
+        if not (0.0 <= latlon_dropout <= 1.0):
+            raise ValueError(
+                f"latlon_dropout must be in [0, 1], got {latlon_dropout}"
+            )
+        self.latlon_dropout = latlon_dropout
 
         # this is used for the channel embedding
         self.band_group_to_idx = {
@@ -548,9 +556,16 @@ class Encoder(nn.Module):
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
         x = torch.cat((latlon_tokens, x), dim=1)
-        upd_mask = torch.cat(
-            (torch.zeros(x.shape[0])[:, None].to(device), upd_mask), dim=1
-        )
+        # by default the latlon token is always kept (mask value 0). If latlon
+        # dropout is enabled, drop (mask) it per-example with the given
+        # probability while training so the model learns to cope without it.
+        if self.training and (self.latlon_dropout > 0):
+            latlon_mask = torch.bernoulli(
+                torch.full((x.shape[0], 1), self.latlon_dropout, device=device)
+            )
+        else:
+            latlon_mask = torch.zeros(x.shape[0])[:, None].to(device)
+        upd_mask = torch.cat((latlon_mask, upd_mask), dim=1)
         orig_indices = torch.cat(
             (torch.zeros(x.shape[0])[:, None].to(device).int(), orig_indices + 1),
             dim=1,
@@ -883,6 +898,7 @@ class Presto(nn.Module):
         decoder_depth=2,
         decoder_num_heads=8,
         max_sequence_length=24,
+        latlon_dropout: float = 0.0,
     ):
         encoder = Encoder(
             embedding_size=encoder_embedding_size,
@@ -892,6 +908,7 @@ class Presto(nn.Module):
             mlp_ratio=mlp_ratio,
             num_heads=encoder_num_heads,
             max_sequence_length=max_sequence_length,
+            latlon_dropout=latlon_dropout,
         )
         decoder = Decoder(
             channel_embeddings=encoder.channel_embed,

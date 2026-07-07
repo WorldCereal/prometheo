@@ -293,6 +293,7 @@ class PretrainedPrestoWrapper(nn.Module):
         num_outputs: Optional[int] = None,
         regression: Optional[bool] = None,
         pretrained_model_path: Optional[Union[str, Path]] = None,
+        latlon_dropout: float = 0.0,
     ):
         """Initialize the Presto model through a prometheo wrapper.
 
@@ -306,6 +307,9 @@ class PretrainedPrestoWrapper(nn.Module):
             Needs to be specified when num_outputs is not None.
         pretrained_model_path : Union[str, Path], optional
             The path to the pretrained model, by default None.
+        latlon_dropout : float, optional
+            Probability with which the latlon token is masked out during
+            training. If 0 (default), the latlon token is always kept.
 
         Raises
         ------
@@ -316,7 +320,7 @@ class PretrainedPrestoWrapper(nn.Module):
         super().__init__()
 
         # Construct original Presto model with the default configuration
-        presto = Presto.construct()
+        presto = Presto.construct(latlon_dropout=latlon_dropout)
 
         # Load pretrained model before making any adaptations
         if pretrained_model_path is not None:
