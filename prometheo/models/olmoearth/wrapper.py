@@ -213,7 +213,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         model_id: Union[str, object] = DEFAULT_MODEL_ID,
         load_weights: bool = True,
         num_outputs: Optional[int] = None,
-        patch_size: int = 8,
+        patch_size: int = 1,
         input_res: int = 10,
         fast_pass: Optional[bool] = None,
     ):
