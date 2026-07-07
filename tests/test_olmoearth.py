@@ -19,6 +19,24 @@ from prometheo.predictors import DEM_BANDS, NODATAVALUE, S1_BANDS, S2_BANDS, Pre
     "olmoearth-pretrain-minimal optional dependency is not installed",
 )
 class TestOlmoEarthAdapter(unittest.TestCase):
+    def test_requires_at_least_one_of_s1_or_s2(self):
+        b, h, w, t = 1, 1, 1, 2
+        timestamps = np.array([[[1, 1, 2024], [1, 2, 2024]]])
+
+        # Neither Sentinel-1 nor Sentinel-2 -> error.
+        with self.assertRaises(ValueError):
+            dataset_to_olmoearth_sample(
+                Predictors(timestamps=timestamps), model_device=torch.device("cpu")
+            )
+
+        # Sentinel-1 only is valid; the sample carries S1 and no S2.
+        s1 = np.ones((b, h, w, t, len(S1_BANDS)), dtype=np.float32)
+        sample = dataset_to_olmoearth_sample(
+            Predictors(s1=s1, timestamps=timestamps), model_device=torch.device("cpu")
+        )
+        self.assertIsNotNone(sample.sentinel1)
+        self.assertIsNone(sample.sentinel2_l2a)
+
     def test_dataset_to_sample_reorders_bands_masks_and_zero_indexes_months(self):
         b, h, w, t = 1, 1, 1, 2
         s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)

@@ -149,8 +149,11 @@ def dataset_to_olmoearth_sample(
 
     if x.timestamps is None:
         raise ValueError("OlmoEarth requires input timestamps")
-    if x.s2 is None:
-        raise ValueError("OlmoEarth requires sentinel2_l2a input via Predictors.s2")
+    if x.s2 is None and x.s1 is None:
+        raise ValueError(
+            "OlmoEarth requires at least one of Sentinel-2 (Predictors.s2) or "
+            "Sentinel-1 (Predictors.s1)"
+        )
 
     oe = _olmoearth()
     normalizer = oe.Normalizer(std_multiplier=2.0)
@@ -164,13 +167,14 @@ def dataset_to_olmoearth_sample(
     # OlmoEarth examples expect the month column to be zero-indexed.
     sample_kwargs["timestamps"][:, :, 1] -= 1
 
-    # Sentinel-2 is required (guarded above); Sentinel-1 is optional.
-    s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
-    s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
-    s2_mask = _make_modality_mask(s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config)
-    s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
-    sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
-    sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
+    # At least one of Sentinel-2 / Sentinel-1 is present (guarded above); both optional.
+    if x.s2 is not None:
+        s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
+        s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
+        s2_mask = _make_modality_mask(s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config)
+        s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
+        sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
+        sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
 
     if x.s1 is not None:
         s1_indices = [S1_BANDS.index(prometheo) for _, prometheo in S1_OLMOEARTH_TO_PROMETHEO]

@@ -44,6 +44,22 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
         self.assertEqual(global_embeddings.shape, (1, 2, 2, 1, 128))
         self.assertEqual(time_embeddings.shape, (1, 2, 2, 2, 128))
 
+    def test_real_olmoearth_forward_sentinel1_only(self):
+        b, h, w, t = 1, 16, 16, 2
+        x = Predictors(
+            s1=np.random.rand(b, h, w, t, len(S1_BANDS)).astype("float32"),
+            timestamps=repeat(
+                np.array([[1, month + 1, 2024] for month in range(t)], dtype="int64"),
+                "t d -> b t d",
+                b=b,
+            ),
+        )
+        model = OlmoEarth(load_weights=False)
+
+        global_embeddings = model(x, eval_pooling=PoolingMethods.GLOBAL)
+
+        self.assertEqual(global_embeddings.shape, (1, 2, 2, 1, 128))
+
     def test_real_olmoearth_preserves_spatial_patch_grid(self):
         x = self._predictors(h=32, w=32)
         model = OlmoEarth(load_weights=False)
