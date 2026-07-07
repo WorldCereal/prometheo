@@ -36,7 +36,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
 
     def test_real_olmoearth_forward_without_weights(self):
         x = self._predictors()
-        model = OlmoEarth(load_weights=False)
+        model = OlmoEarth(load_weights=False, patch_size=8)
 
         global_embeddings = model(x, eval_pooling=PoolingMethods.GLOBAL)
         time_embeddings = model(x, eval_pooling=PoolingMethods.TIME)
@@ -54,7 +54,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
                 b=b,
             ),
         )
-        model = OlmoEarth(load_weights=False)
+        model = OlmoEarth(load_weights=False, patch_size=8)
 
         global_embeddings = model(x, eval_pooling=PoolingMethods.GLOBAL)
 
@@ -62,7 +62,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
 
     def test_real_olmoearth_preserves_spatial_patch_grid(self):
         x = self._predictors(h=32, w=32)
-        model = OlmoEarth(load_weights=False)
+        model = OlmoEarth(load_weights=False, patch_size=8)
 
         global_embeddings = model(x, eval_pooling=PoolingMethods.GLOBAL)
         time_embeddings = model(x, eval_pooling=PoolingMethods.TIME)
@@ -102,7 +102,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
 
         # eval() disables band dropout so both paths are deterministic; both share
         # the same underlying (randomly initialised) weights via wrapper.model.
-        wrapper = OlmoEarth(load_weights=False)
+        wrapper = OlmoEarth(load_weights=False, patch_size=8)
         wrapper.eval()
 
         # --- wrapper path (the code under test) ---
@@ -174,7 +174,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
         )
         x = Predictors(s2=s2, timestamps=timestamps)
 
-        wrapper = OlmoEarth(load_weights=False)
+        wrapper = OlmoEarth(load_weights=False, patch_size=8)
         wrapper.eval()
         with torch.no_grad():
             global_out = wrapper(x, eval_pooling=PoolingMethods.GLOBAL)
@@ -185,7 +185,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
 
     def test_fast_pass_auto_selected_from_missing_tokens(self):
         # fast_pass=True only when every token is present, else False.
-        wrapper = OlmoEarth(load_weights=False)
+        wrapper = OlmoEarth(load_weights=False, patch_size=8)
         tokenization_config = wrapper.model.encoder.tokenization_config
 
         b, h, w, t = 1, 16, 16, 2
@@ -216,7 +216,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
     )
     def test_real_olmoearth_forward_with_weights(self):
         x = self._predictors()
-        model = OlmoEarth(load_weights=True)
+        model = OlmoEarth(load_weights=True, patch_size=8)
 
         global_embeddings = model(x, eval_pooling=PoolingMethods.GLOBAL)
 

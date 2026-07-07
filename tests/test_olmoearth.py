@@ -113,8 +113,8 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         self.assertEqual(grouped.sentinel2_l2a_mask.shape[-1], len(S2_OLMOEARTH_TO_PROMETHEO))
 
     def test_wrapper_global_pooling_collapses_time(self):
-        # Spatial dims must be divisible by the patch size (default 8); a 16x16
-        # input yields a 2x2 patch grid.
+        # Spatial dims must be divisible by the patch size; a 16x16 input with
+        # patch_size=8 yields a 2x2 patch grid.
         b, h, w, t = 1, 16, 16, 2
         timestamps = repeat(
             np.array([[1, m + 1, 2024] for m in range(t)]), "t d -> b t d", b=b
@@ -124,7 +124,7 @@ class TestOlmoEarthAdapter(unittest.TestCase):
             timestamps=timestamps,
         )
 
-        model = PretrainedOlmoEarthWrapper(load_weights=False)
+        model = PretrainedOlmoEarthWrapper(load_weights=False, patch_size=8)
         output = model(x, eval_pooling=PoolingMethods.GLOBAL)
 
         self.assertEqual(output.shape[:4], (b, h // model.patch_size, w // model.patch_size, 1))
@@ -139,7 +139,7 @@ class TestOlmoEarthAdapter(unittest.TestCase):
             timestamps=timestamps,
         )
 
-        model = PretrainedOlmoEarthWrapper(load_weights=False)
+        model = PretrainedOlmoEarthWrapper(load_weights=False, patch_size=8)
         output = model(x, eval_pooling=PoolingMethods.TIME)
 
         self.assertEqual(output.shape[:4], (b, h // model.patch_size, w // model.patch_size, t))
