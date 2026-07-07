@@ -231,8 +231,17 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         num_outputs: Optional[int] = None,
         patch_size: int = 8,
         input_res: int = 10,
-        fast_pass: bool = True,
+        fast_pass: Optional[bool] = None,
     ):
+        """
+        Args:
+            fast_pass: OlmoEarth's inference fast path skips all mask handling
+                (nodata/MISSING tokens are neither removed nor attention-masked).
+                It is only correct when every token is present. Leave as ``None``
+                (the default) to select it automatically per input — fast path
+                when nothing is masked, masked path otherwise. Pass a bool to
+                force it.
+        """
         super().__init__()
         load_model_from_id = _olmoearth().load_model_from_id
         self.model = load_model_from_id(_get_model_id(model_id), load_weights=load_weights)
@@ -271,60 +280,108 @@ class PretrainedOlmoEarthWrapper(nn.Module):
             sample,
             patch_size=self.patch_size,
             input_res=self.input_res,
-            fast_pass=self.fast_pass,
+            fast_pass=self._resolve_fast_pass(sample),
         )
-        embeddings = self._extract_embeddings(encoder_output)
-        embeddings = self._apply_pooling(embeddings, eval_pooling)
+        embeddings, validity = self._extract_embeddings(encoder_output)
+        embeddings = self._apply_pooling(embeddings, validity, eval_pooling)
         if self.head is not None:
             if eval_pooling is None:
                 raise ValueError("Can't use the head without a pooling method")
             return self.head(embeddings)
         return embeddings
 
+    def _resolve_fast_pass(self, sample) -> bool:
+        """Decide whether to use OlmoEarth's fast path for this sample.
+
+        The fast path skips mask handling entirely, so it is only correct when
+        every token is present. If any modality mask contains a non-
+        ``ONLINE_ENCODER`` (e.g. MISSING) entry, fall back to the masked path so
+        nodata tokens are excluded from attention. An explicit ``self.fast_pass``
+        bool overrides the auto-detection.
+        """
+        if self.fast_pass is not None:
+            return self.fast_pass
+        online = _olmoearth().MaskValue.ONLINE_ENCODER.value
+        for name, value in sample.as_dict().items():
+            if name.endswith("_mask") and value is not None:
+                if not bool((value == online).all()):
+                    return False
+        return True
+
     def _extract_embeddings(self, encoder_output):
+        """Reduce the per-modality encoder tokens to ``[B, patch_h, patch_w, T, D]``.
+
+        MISSING tokens are excluded from every mean (over band sets and over
+        modalities), mirroring OlmoEarth's own ``pool_unmasked_tokens``. Returns
+        the embeddings plus a ``[B, patch_h, patch_w, T]`` validity tensor
+        (1.0 where at least one non-missing token contributed), which downstream
+        pooling uses to exclude missing timesteps. Returns ``(embeddings, None)``
+        for fallback outputs that carry no masks.
+        """
         if isinstance(encoder_output, dict) and "tokens_and_masks" in encoder_output:
             tokens_and_masks = encoder_output["tokens_and_masks"]
-            modality_embeddings = []
+            online = _olmoearth().MaskValue.ONLINE_ENCODER.value
+            modality_embeddings, modality_validities = [], []
             for modality_name in ["sentinel2_l2a", "sentinel1", "srtm"]:
-                modality_tokens = getattr(tokens_and_masks, modality_name, None)
-                if modality_tokens is None:
+                tokens = getattr(tokens_and_masks, modality_name, None)
+                if tokens is None:
                     continue
-                if modality_tokens.ndim == 6:
-                    # [B, patch_h, patch_w, T, bandsets, D] -> [B, patch_h, patch_w, T, D]
-                    modality_tokens = modality_tokens.mean(dim=4)
-                modality_embeddings.append(modality_tokens)
+                mask = getattr(tokens_and_masks, f"{modality_name}_mask", None)
+                if tokens.ndim == 6 and mask is not None:
+                    # tokens [B, ph, pw, T, bandsets, D]; mask [B, ph, pw, T, bandsets].
+                    # Masked mean over band sets, dropping MISSING tokens.
+                    valid = (mask == online).to(tokens.dtype)
+                    count = valid.sum(dim=4)
+                    emb = (tokens * valid.unsqueeze(-1)).sum(dim=4) / count.clamp(min=1.0).unsqueeze(-1)
+                    modality_valid = (count > 0).to(tokens.dtype)
+                elif tokens.ndim == 6:
+                    emb = tokens.mean(dim=4)
+                    modality_valid = tokens.new_ones(tokens.shape[:4])
+                else:
+                    emb = tokens
+                    modality_valid = tokens.new_ones(emb.shape[:-1])
+                modality_embeddings.append(emb)
+                modality_validities.append(modality_valid)
             if modality_embeddings:
-                max_timesteps = max(tokens.shape[3] for tokens in modality_embeddings)
-                modality_embeddings = [
-                    tokens.expand(*tokens.shape[:3], max_timesteps, tokens.shape[-1])
-                    if tokens.shape[3] == 1 and max_timesteps > 1
-                    else tokens
-                    for tokens in modality_embeddings
-                ]
-                return torch.stack(modality_embeddings, dim=0).mean(dim=0)
+                max_timesteps = max(emb.shape[3] for emb in modality_embeddings)
+                aligned_embeddings, aligned_validities = [], []
+                for emb, valid in zip(modality_embeddings, modality_validities):
+                    if emb.shape[3] == 1 and max_timesteps > 1:
+                        emb = emb.expand(*emb.shape[:3], max_timesteps, emb.shape[-1])
+                        valid = valid.expand(*valid.shape[:3], max_timesteps)
+                    aligned_embeddings.append(emb)
+                    aligned_validities.append(valid)
+                emb_stack = torch.stack(aligned_embeddings, dim=0)   # [M, B, ph, pw, T, D]
+                valid_stack = torch.stack(aligned_validities, dim=0)  # [M, B, ph, pw, T]
+                count = valid_stack.sum(dim=0)                        # [B, ph, pw, T]
+                combined = (emb_stack * valid_stack.unsqueeze(-1)).sum(dim=0) / count.clamp(min=1.0).unsqueeze(-1)
+                combined_valid = (count > 0).to(emb_stack.dtype)
+                return combined, combined_valid
             raise ValueError("OlmoEarth encoder output did not include supported S1/S2/SRTM tokens")
         if isinstance(encoder_output, tuple):
-            return encoder_output[0]
-        return encoder_output
+            return encoder_output[0], None
+        return encoder_output, None
 
-    def _apply_pooling(self, embeddings: torch.Tensor, eval_pooling):
+    def _apply_pooling(self, embeddings: torch.Tensor, validity, eval_pooling):
         if eval_pooling is None:
             return embeddings
-        if embeddings.ndim == 6:
-            # OlmoEarth token shape: [B, patch_h, patch_w, T, bandsets, D].
-            embeddings = embeddings.mean(dim=4)
         if embeddings.ndim == 5:
-            # PromethEO convention: preserve the spatial token grid and pool time only for GLOBAL.
-            if eval_pooling == PoolingMethods.GLOBAL:
-                return embeddings.mean(dim=3, keepdim=True)
+            # PromethEO convention: preserve the spatial token grid; pool time only for GLOBAL.
             if eval_pooling == PoolingMethods.TIME:
                 return embeddings
+            if eval_pooling == PoolingMethods.GLOBAL:
+                if validity is None:
+                    return embeddings.mean(dim=3, keepdim=True)
+                # Masked mean over time, excluding missing timesteps.
+                weights = validity.unsqueeze(-1)  # [B, ph, pw, T, 1]
+                count = validity.sum(dim=3, keepdim=True).clamp(min=1.0).unsqueeze(-1)
+                return (embeddings * weights).sum(dim=3, keepdim=True) / count
         if embeddings.ndim == 3:
             # Token embeddings [B, tokens, D]. Use a conservative global mean.
             pooled = embeddings.mean(dim=1)
             if eval_pooling == PoolingMethods.GLOBAL:
                 return pooled[:, None, None, None, :]
         raise ValueError(
-            f"Unsupported OlmoEarth encoder output shape {tuple(embeddings.shape)} "
+            f"Unsupported OlmoEarth embedding shape {tuple(embeddings.shape)} "
             f"for pooling mode {eval_pooling}"
         )

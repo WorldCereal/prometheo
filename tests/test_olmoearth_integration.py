@@ -10,9 +10,10 @@ from prometheo.models import OlmoEarth
 from prometheo.models.olmoearth.wrapper import (
     S1_OLMOEARTH_TO_PROMETHEO,
     S2_OLMOEARTH_TO_PROMETHEO,
+    dataset_to_olmoearth_sample,
 )
 from prometheo.models.pooling import PoolingMethods
-from prometheo.predictors import DEM_BANDS, S1_BANDS, S2_BANDS, Predictors
+from prometheo.predictors import DEM_BANDS, NODATAVALUE, S1_BANDS, S2_BANDS, Predictors
 
 
 @unittest.skipIf(
@@ -129,14 +130,69 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
                 reference_sample,
                 patch_size=wrapper.patch_size,
                 input_res=wrapper.input_res,
-                fast_pass=wrapper.fast_pass,
+                fast_pass=wrapper._resolve_fast_pass(reference_sample),
             )
+        reference_embeddings, reference_validity = wrapper._extract_embeddings(
+            reference_encoder_output
+        )
         reference_out = wrapper._apply_pooling(
-            wrapper._extract_embeddings(reference_encoder_output), PoolingMethods.TIME
+            reference_embeddings, reference_validity, PoolingMethods.TIME
         )
 
         self.assertEqual(wrapper_out.shape, reference_out.shape)
         torch.testing.assert_close(wrapper_out, reference_out)
+
+    def test_missing_timestep_excluded_from_global_pooling(self):
+        """A fully-nodata timestep must not affect the GLOBAL-pooled embedding.
+
+        With only timestep 0 valid, GLOBAL pooling (masked mean over time) should
+        equal timestep 0 of the TIME-pooled output. Under the old naive mean it
+        would instead be the average of the valid and the missing timestep.
+        """
+        b, h, w = 1, 16, 16
+        rng = np.random.default_rng(2)
+        valid = rng.random((b, h, w, 1, len(S2_BANDS))).astype("float32")
+        s2 = np.concatenate([valid, np.full_like(valid, NODATAVALUE)], axis=3)
+        timestamps = repeat(
+            np.array([[1, 6, 2024], [1, 7, 2024]], dtype="int64"), "t d -> b t d", b=b
+        )
+        x = Predictors(s2=s2, timestamps=timestamps)
+
+        wrapper = OlmoEarth(load_weights=False)
+        wrapper.eval()
+        with torch.no_grad():
+            global_out = wrapper(x, eval_pooling=PoolingMethods.GLOBAL)
+            time_out = wrapper(x, eval_pooling=PoolingMethods.TIME)
+
+        # GLOBAL pooled over the single valid timestep == that timestep's embedding.
+        torch.testing.assert_close(global_out[:, :, :, 0], time_out[:, :, :, 0])
+
+    def test_fast_pass_auto_selected_from_missing_tokens(self):
+        # fast_pass=True only when every token is present, else False.
+        wrapper = OlmoEarth(load_weights=False)
+        tokenization_config = wrapper.model.encoder.tokenization_config
+
+        b, h, w, t = 1, 16, 16, 2
+        timestamps = repeat(
+            np.array([[1, 6, 2024], [1, 7, 2024]], dtype="int64"), "t d -> b t d", b=b
+        )
+        clean = Predictors(
+            s2=np.random.rand(b, h, w, t, len(S2_BANDS)).astype("float32"),
+            timestamps=timestamps,
+        )
+        dirty_s2 = np.random.rand(b, h, w, t, len(S2_BANDS)).astype("float32")
+        dirty_s2[:, :, :, 1, :] = NODATAVALUE
+        dirty = Predictors(s2=dirty_s2, timestamps=timestamps)
+
+        clean_sample = dataset_to_olmoearth_sample(
+            clean, tokenization_config=tokenization_config
+        )
+        dirty_sample = dataset_to_olmoearth_sample(
+            dirty, tokenization_config=tokenization_config
+        )
+
+        self.assertTrue(wrapper._resolve_fast_pass(clean_sample))
+        self.assertFalse(wrapper._resolve_fast_pass(dirty_sample))
 
     @unittest.skipUnless(
         os.environ.get("PROMETHEO_TEST_OLMOEARTH_WEIGHTS") == "1",
