@@ -36,24 +36,6 @@ S2_OLMOEARTH_TO_PROMETHEO = [
 ]
 S1_OLMOEARTH_TO_PROMETHEO = [("vv", "VV"), ("vh", "VH")]
 
-# OlmoEarth models flag some modalities as "decode only" in their pretraining
-# masking config (masking_config.strategy_config.only_decode_modalities). These
-# are reconstructed by the decoder but never fed to the encoder, so they must not
-# be included in the encoder input. The minimal inference package does not expose
-# this list on the loaded model (it lives only in the training config), so we
-# mirror it here. Of the modalities PromethEO can supply, only SRTM (Predictors.dem)
-# is decode-only, so it is currently dropped from the encoder input.
-DECODE_ONLY_MODALITIES = frozenset(
-    {
-        "worldcover",
-        "srtm",
-        "openstreetmap_raster",
-        "wri_canopy_height_map",
-        "cdl",
-        "worldcereal",
-    }
-)
-
 
 def _missing_dependency_error() -> ImportError:
     return ImportError(
@@ -153,9 +135,9 @@ def dataset_to_olmoearth_sample(
     The first implementation supports the modalities PromethEO already models
     cleanly for OlmoEarth v1.2: Sentinel-2 L2A, Sentinel-1, and timestamps.
     Landsat is intentionally omitted because `Predictors` has no Landsat field.
-    SRTM (``Predictors.dem``) is a decode-only modality for OlmoEarth (see
-    ``DECODE_ONLY_MODALITIES``), so it is not passed to the encoder; if supplied,
-    it is ignored with a warning.
+    SRTM (``Predictors.dem``) is a decode-only modality for OlmoEarth (it is
+    reconstructed by the decoder but never fed to the encoder), so it is not
+    passed to the encoder; if supplied, it is ignored with a warning.
 
     Args:
         x: The PromethEO predictors to convert.
@@ -182,15 +164,13 @@ def dataset_to_olmoearth_sample(
     # OlmoEarth examples expect the month column to be zero-indexed.
     sample_kwargs["timestamps"][:, :, 1] -= 1
 
-    if x.s2 is not None:
-        s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
-        s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
-        s2_mask = _make_modality_mask(
-            s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config
-        )
-        s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
-        sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
-        sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
+    # Sentinel-2 is required (guarded above); Sentinel-1 is optional.
+    s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
+    s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
+    s2_mask = _make_modality_mask(s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config)
+    s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
+    sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
+    sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
 
     if x.s1 is not None:
         s1_indices = [S1_BANDS.index(prometheo) for _, prometheo in S1_OLMOEARTH_TO_PROMETHEO]
@@ -203,8 +183,8 @@ def dataset_to_olmoearth_sample(
         sample_kwargs["sentinel1_mask"] = to_torchtensor(s1_mask, model_device).long()
 
     if x.dem is not None:
-        # SRTM is a decode-only modality (see DECODE_ONLY_MODALITIES); the encoder
-        # never sees it, so we drop it rather than feed it in and get wrong results.
+        # SRTM is decode-only for OlmoEarth; the encoder never sees it, so we drop
+        # it rather than feed it in and get wrong results.
         warnings.warn(
             "OlmoEarth treats SRTM as a decode-only modality, so it is not passed "
             "to the encoder; Predictors.dem is ignored.",
@@ -252,9 +232,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         if num_outputs is not None:
             hidden_size = getattr(getattr(self.model, "encoder", self.model), "embedding_size", None)
             if hidden_size is None:
-                hidden_size = getattr(getattr(self.model, "encoder", self.model), "embed_dim", None)
-            if hidden_size is None:
-                raise ValueError("num_outputs requires the OlmoEarth encoder to expose embedding_size or embed_dim")
+                raise ValueError("num_outputs requires the OlmoEarth encoder to expose embedding_size")
             self.head = _FinetuningHead(int(hidden_size), num_outputs)
 
     def forward(
@@ -315,54 +293,38 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         modalities), mirroring OlmoEarth's own ``pool_unmasked_tokens``. Returns
         the embeddings plus a ``[B, patch_h, patch_w, T]`` validity tensor
         (1.0 where at least one non-missing token contributed), which downstream
-        pooling uses to exclude missing timesteps. Returns ``(embeddings, None)``
-        for fallback outputs that carry no masks.
+        pooling uses to exclude missing timesteps.
         """
         if isinstance(encoder_output, dict) and "tokens_and_masks" in encoder_output:
             tokens_and_masks = encoder_output["tokens_and_masks"]
             online = _olmoearth().MaskValue.ONLINE_ENCODER.value
             modality_embeddings, modality_validities = [], []
-            for modality_name in ["sentinel2_l2a", "sentinel1", "srtm"]:
+            for modality_name in ["sentinel2_l2a", "sentinel1"]:
                 tokens = getattr(tokens_and_masks, modality_name, None)
                 if tokens is None:
                     continue
-                mask = getattr(tokens_and_masks, f"{modality_name}_mask", None)
-                if tokens.ndim == 6 and mask is not None:
-                    # tokens [B, ph, pw, T, bandsets, D]; mask [B, ph, pw, T, bandsets].
-                    # Masked mean over band sets, dropping MISSING tokens.
-                    valid = (mask == online).to(tokens.dtype)
-                    count = valid.sum(dim=4)
-                    emb = (tokens * valid.unsqueeze(-1)).sum(dim=4) / count.clamp(min=1.0).unsqueeze(-1)
-                    modality_valid = (count > 0).to(tokens.dtype)
-                elif tokens.ndim == 6:
-                    emb = tokens.mean(dim=4)
-                    modality_valid = tokens.new_ones(tokens.shape[:4])
-                else:
-                    emb = tokens
-                    modality_valid = tokens.new_ones(emb.shape[:-1])
+                # tokens [B, ph, pw, T, bandsets, D]; mask [B, ph, pw, T, bandsets].
+                # Masked mean over band sets, dropping MISSING tokens.
+                mask = getattr(tokens_and_masks, f"{modality_name}_mask")
+                valid = (mask == online).to(tokens.dtype)
+                count = valid.sum(dim=4)
+                emb = (tokens * valid.unsqueeze(-1)).sum(dim=4) / count.clamp(min=1.0).unsqueeze(-1)
                 modality_embeddings.append(emb)
-                modality_validities.append(modality_valid)
+                modality_validities.append((count > 0).to(tokens.dtype))
             if modality_embeddings:
-                max_timesteps = max(emb.shape[3] for emb in modality_embeddings)
-                aligned_embeddings, aligned_validities = [], []
-                for emb, valid in zip(modality_embeddings, modality_validities):
-                    if emb.shape[3] == 1 and max_timesteps > 1:
-                        emb = emb.expand(*emb.shape[:3], max_timesteps, emb.shape[-1])
-                        valid = valid.expand(*valid.shape[:3], max_timesteps)
-                    aligned_embeddings.append(emb)
-                    aligned_validities.append(valid)
-                emb_stack = torch.stack(aligned_embeddings, dim=0)   # [M, B, ph, pw, T, D]
-                valid_stack = torch.stack(aligned_validities, dim=0)  # [M, B, ph, pw, T]
+                emb_stack = torch.stack(modality_embeddings, dim=0)   # [M, B, ph, pw, T, D]
+                valid_stack = torch.stack(modality_validities, dim=0)  # [M, B, ph, pw, T]
                 count = valid_stack.sum(dim=0)                        # [B, ph, pw, T]
                 combined = (emb_stack * valid_stack.unsqueeze(-1)).sum(dim=0) / count.clamp(min=1.0).unsqueeze(-1)
                 combined_valid = (count > 0).to(emb_stack.dtype)
                 return combined, combined_valid
-            raise ValueError("OlmoEarth encoder output did not include supported S1/S2/SRTM tokens")
-        if isinstance(encoder_output, tuple):
-            return encoder_output[0], None
-        return encoder_output, None
+            raise ValueError("OlmoEarth encoder output did not include supported S1/S2 tokens")
+        raise ValueError(
+            f"Unexpected OlmoEarth encoder output type {type(encoder_output).__name__}; "
+            "expected a dict with a 'tokens_and_masks' entry"
+        )
 
-    def _apply_pooling(self, embeddings: torch.Tensor, validity, eval_pooling):
+    def _apply_pooling(self, embeddings: torch.Tensor, validity: torch.Tensor, eval_pooling):
         if eval_pooling is None:
             return embeddings
         if embeddings.ndim == 5:
@@ -370,17 +332,10 @@ class PretrainedOlmoEarthWrapper(nn.Module):
             if eval_pooling == PoolingMethods.TIME:
                 return embeddings
             if eval_pooling == PoolingMethods.GLOBAL:
-                if validity is None:
-                    return embeddings.mean(dim=3, keepdim=True)
                 # Masked mean over time, excluding missing timesteps.
                 weights = validity.unsqueeze(-1)  # [B, ph, pw, T, 1]
                 count = validity.sum(dim=3, keepdim=True).clamp(min=1.0).unsqueeze(-1)
                 return (embeddings * weights).sum(dim=3, keepdim=True) / count
-        if embeddings.ndim == 3:
-            # Token embeddings [B, tokens, D]. Use a conservative global mean.
-            pooled = embeddings.mean(dim=1)
-            if eval_pooling == PoolingMethods.GLOBAL:
-                return pooled[:, None, None, None, :]
         raise ValueError(
             f"Unsupported OlmoEarth embedding shape {tuple(embeddings.shape)} "
             f"for pooling mode {eval_pooling}"
