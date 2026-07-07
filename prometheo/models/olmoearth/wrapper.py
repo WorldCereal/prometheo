@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import warnings
+from functools import lru_cache
+from types import SimpleNamespace
 from typing import Optional, Union
 
 import numpy as np
@@ -8,7 +11,6 @@ from torch import nn
 
 from prometheo.models.pooling import PoolingMethods
 from prometheo.predictors import (
-    DEM_BANDS,
     NODATAVALUE,
     S1_BANDS,
     S2_BANDS,
@@ -33,7 +35,24 @@ S2_OLMOEARTH_TO_PROMETHEO = [
     ("B09", "B9"),
 ]
 S1_OLMOEARTH_TO_PROMETHEO = [("vv", "VV"), ("vh", "VH")]
-SRTM_OLMOEARTH_TO_PROMETHEO = [("srtm", "elevation")]
+
+# OlmoEarth models flag some modalities as "decode only" in their pretraining
+# masking config (masking_config.strategy_config.only_decode_modalities). These
+# are reconstructed by the decoder but never fed to the encoder, so they must not
+# be included in the encoder input. The minimal inference package does not expose
+# this list on the loaded model (it lives only in the training config), so we
+# mirror it here. Of the modalities PromethEO can supply, only SRTM (Predictors.dem)
+# is decode-only, so it is currently dropped from the encoder input.
+DECODE_ONLY_MODALITIES = frozenset(
+    {
+        "worldcover",
+        "srtm",
+        "openstreetmap_raster",
+        "wri_canopy_height_map",
+        "cdl",
+        "worldcereal",
+    }
+)
 
 
 def _missing_dependency_error() -> ImportError:
@@ -44,41 +63,106 @@ def _missing_dependency_error() -> ImportError:
     )
 
 
-def _get_model_id(model_id: Union[str, object]):
+@lru_cache(maxsize=1)
+def _olmoearth() -> SimpleNamespace:
+    """Lazily import the optional ``olmoearth_pretrain_minimal`` dependency.
+
+    Imports live here (rather than at module top level) so PromethEO can be
+    used without OlmoEarth installed. The result is cached, so the import
+    machinery only runs once and every call site shares a single, friendly
+    error path.
+    """
     try:
-        from olmoearth_pretrain_minimal import ModelID
-    except ImportError as exc:
-        raise _missing_dependency_error() from exc
-
-    if isinstance(model_id, str):
-        return getattr(ModelID, model_id)
-    return model_id
-
-
-def _make_modality_mask(values: np.ndarray) -> np.ndarray:
-    return np.where(np.any(values == NODATAVALUE, axis=-1), 3, 0).astype(np.int64)
-
-
-def _normalizer_and_sample_types():
-    try:
-        from olmoearth_pretrain_minimal import Normalizer
+        from olmoearth_pretrain_minimal import (
+            ModelID,
+            Normalizer,
+            load_model_from_id,
+        )
+        from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.nn.tokenization import (
+            TokenizationConfig,
+        )
         from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.constants import (
             Modality,
         )
         from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.datatypes import (
-            MaskedOlmoEarthSample,
+            MaskedOlmoEarthSample, MaskValue
         )
     except ImportError as exc:
         raise _missing_dependency_error() from exc
-    return Normalizer, Modality, MaskedOlmoEarthSample
+
+    return SimpleNamespace(
+        ModelID=ModelID,
+        Normalizer=Normalizer,
+        load_model_from_id=load_model_from_id,
+        Modality=Modality,
+        MaskedOlmoEarthSample=MaskedOlmoEarthSample,
+        MaskValue=MaskValue,
+        TokenizationConfig=TokenizationConfig,
+    )
 
 
-def dataset_to_olmoearth_sample(x: Predictors, model_device: torch.device = device):
+def _get_model_id(model_id: Union[str, object]):
+    if isinstance(model_id, str):
+        return getattr(_olmoearth().ModelID, model_id)
+    return model_id
+
+
+def _make_modality_mask(
+    values: np.ndarray, modality_name: str, tokenization_config
+) -> np.ndarray:
+    """Build a per-band-set OlmoEarth mask for one modality.
+
+    OlmoEarth tokenizes each modality into one or more *band sets* (as described
+    by the model's ``TokenizationConfig``), and every band set becomes its own
+    token with its own mask entry. The encoder therefore expects a mask whose
+    trailing dimension indexes band sets — shape ``[..., num_band_sets]``.
+    Collapsing every band into a single value (the previous behaviour) drops that
+    axis, so a model that splits a modality across multiple band sets would be
+    masked incorrectly.
+
+    A band set is marked ``MISSING`` if any of its bands is ``NODATAVALUE`` at a
+    given (spatial, temporal) location, and ``ONLINE_ENCODER`` otherwise.
+
+    Args:
+        values: Modality array ``[..., bands]`` with bands already ordered to
+            match the modality's canonical OlmoEarth band order.
+        modality_name: OlmoEarth modality name, e.g. ``"sentinel2_l2a"``.
+        tokenization_config: The model's ``TokenizationConfig``, used to resolve
+            which band indices belong to each band set.
+    """
+    maskvalue = _olmoearth().MaskValue
+    bandset_indices = tokenization_config.get_bandset_indices(modality_name)
+    per_bandset = [
+        np.where(
+            np.any(values[..., idxs] == NODATAVALUE, axis=-1),
+            maskvalue.MISSING.value,
+            maskvalue.ONLINE_ENCODER.value,
+        )
+        for idxs in bandset_indices
+    ]
+    return np.stack(per_bandset, axis=-1).astype(np.int64)
+
+
+def dataset_to_olmoearth_sample(
+    x: Predictors,
+    model_device: torch.device = device,
+    tokenization_config=None,
+):
     """Convert PromethEO predictors into an OlmoEarth masked sample.
 
     The first implementation supports the modalities PromethEO already models
     cleanly for OlmoEarth v1.2: Sentinel-2 L2A, Sentinel-1, and timestamps.
     Landsat is intentionally omitted because `Predictors` has no Landsat field.
+    SRTM (``Predictors.dem``) is a decode-only modality for OlmoEarth (see
+    ``DECODE_ONLY_MODALITIES``), so it is not passed to the encoder; if supplied,
+    it is ignored with a warning.
+
+    Args:
+        x: The PromethEO predictors to convert.
+        model_device: Device to place the resulting tensors on.
+        tokenization_config: The model's ``TokenizationConfig``, used to build
+            per-band-set masks. If ``None``, the OlmoEarth default tokenization
+            is used.
     """
 
     if x.timestamps is None:
@@ -86,8 +170,10 @@ def dataset_to_olmoearth_sample(x: Predictors, model_device: torch.device = devi
     if x.s2 is None:
         raise ValueError("OlmoEarth requires sentinel2_l2a input via Predictors.s2")
 
-    Normalizer, Modality, MaskedOlmoEarthSample = _normalizer_and_sample_types()
-    normalizer = Normalizer(std_multiplier=2.0)
+    oe = _olmoearth()
+    normalizer = oe.Normalizer(std_multiplier=2.0)
+    if tokenization_config is None:
+        tokenization_config = oe.TokenizationConfig()
 
     sample_kwargs = {
         "timestamps": to_torchtensor(np.array(x.timestamps, copy=True), model_device).long()
@@ -99,28 +185,33 @@ def dataset_to_olmoearth_sample(x: Predictors, model_device: torch.device = devi
     if x.s2 is not None:
         s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
         s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
-        s2_mask = _make_modality_mask(s2)
-        s2 = normalizer.normalize(Modality.SENTINEL2_L2A, s2)
+        s2_mask = _make_modality_mask(
+            s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config
+        )
+        s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
         sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
         sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
 
     if x.s1 is not None:
         s1_indices = [S1_BANDS.index(prometheo) for _, prometheo in S1_OLMOEARTH_TO_PROMETHEO]
         s1 = np.asarray(x.s1)[..., s1_indices].astype(np.float32)
-        s1_mask = _make_modality_mask(s1)
-        s1 = normalizer.normalize(Modality.SENTINEL1, s1)
+        s1_mask = _make_modality_mask(
+            s1, oe.Modality.SENTINEL1.name, tokenization_config
+        )
+        s1 = normalizer.normalize(oe.Modality.SENTINEL1, s1)
         sample_kwargs["sentinel1"] = to_torchtensor(s1, model_device).float()
         sample_kwargs["sentinel1_mask"] = to_torchtensor(s1_mask, model_device).long()
 
     if x.dem is not None:
-        srtm_indices = [DEM_BANDS.index(prometheo) for _, prometheo in SRTM_OLMOEARTH_TO_PROMETHEO]
-        srtm = np.asarray(x.dem)[..., srtm_indices].astype(np.float32)
-        srtm_mask = np.where(srtm == NODATAVALUE, 3, 0).astype(np.int64)
-        srtm = normalizer.normalize(Modality.SRTM, srtm)
-        sample_kwargs["srtm"] = to_torchtensor(srtm, model_device).float()
-        sample_kwargs["srtm_mask"] = to_torchtensor(srtm_mask, model_device).long()
+        # SRTM is a decode-only modality (see DECODE_ONLY_MODALITIES); the encoder
+        # never sees it, so we drop it rather than feed it in and get wrong results.
+        warnings.warn(
+            "OlmoEarth treats SRTM as a decode-only modality, so it is not passed "
+            "to the encoder; Predictors.dem is ignored.",
+            stacklevel=2,
+        )
 
-    return MaskedOlmoEarthSample(**sample_kwargs)
+    return oe.MaskedOlmoEarthSample(**sample_kwargs)
 
 
 class _FinetuningHead(nn.Module):
@@ -143,11 +234,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         fast_pass: bool = True,
     ):
         super().__init__()
-        try:
-            from olmoearth_pretrain_minimal import load_model_from_id
-        except ImportError as exc:
-            raise _missing_dependency_error() from exc
-
+        load_model_from_id = _olmoearth().load_model_from_id
         self.model = load_model_from_id(_get_model_id(model_id), load_weights=load_weights)
         self.patch_size = patch_size
         self.input_res = input_res
@@ -176,7 +263,10 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 eval_pooling = PoolingMethods.GLOBAL
 
         model_device = next(self.parameters(), torch.empty(0, device=device)).device
-        sample = dataset_to_olmoearth_sample(x, model_device=model_device)
+        tokenization_config = getattr(self.model.encoder, "tokenization_config", None)
+        sample = dataset_to_olmoearth_sample(
+            x, model_device=model_device, tokenization_config=tokenization_config
+        )
         encoder_output = self.model.encoder(
             sample,
             patch_size=self.patch_size,

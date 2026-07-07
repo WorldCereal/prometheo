@@ -3,9 +3,14 @@ import os
 import unittest
 
 import numpy as np
+import torch
 from einops import repeat
 
 from prometheo.models import OlmoEarth
+from prometheo.models.olmoearth.wrapper import (
+    S1_OLMOEARTH_TO_PROMETHEO,
+    S2_OLMOEARTH_TO_PROMETHEO,
+)
 from prometheo.models.pooling import PoolingMethods
 from prometheo.predictors import DEM_BANDS, S1_BANDS, S2_BANDS, Predictors
 
@@ -47,6 +52,91 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
 
         self.assertEqual(global_embeddings.shape, (1, 4, 4, 1, 128))
         self.assertEqual(time_embeddings.shape, (1, 4, 4, 2, 128))
+
+    def test_wrapper_forward_matches_raw_library_pipeline(self):
+        """End-to-end there-and-back: the wrapper's public output must equal the
+        embeddings obtained by driving the *same* model with a sample built
+        independently through the raw olmoearth_pretrain_minimal API.
+
+        This is a characterization test — the reference reconstructs the sample
+        from the raw API, so it pins forward's encoder-invocation params
+        (patch_size / input_res / fast_pass) and the extraction + pooling at the
+        value level, which the shape-only tests above do not.
+        """
+        from olmoearth_pretrain_minimal import Normalizer
+        from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.constants import (
+            Modality,
+        )
+        from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.datatypes import (
+            MaskedOlmoEarthSample,
+            MaskValue,
+        )
+
+        b, h, w, t = 1, 16, 16, 2
+        rng = np.random.default_rng(0)
+        s2 = rng.random((b, h, w, t, len(S2_BANDS))).astype("float32")
+        s1 = rng.random((b, h, w, t, len(S1_BANDS))).astype("float32")
+        timestamps = repeat(
+            np.array([[1, month + 1, 2024] for month in range(t)], dtype="int64"),
+            "t d -> b t d",
+            b=b,
+        )
+        x = Predictors(s2=s2, s1=s1, timestamps=timestamps)
+
+        # eval() disables band dropout so both paths are deterministic; both share
+        # the same underlying (randomly initialised) weights via wrapper.model.
+        wrapper = OlmoEarth(load_weights=False)
+        wrapper.eval()
+
+        # --- wrapper path (the code under test) ---
+        with torch.no_grad():
+            wrapper_out = wrapper(x, eval_pooling=PoolingMethods.TIME)
+
+        # --- reference path: build the canonical sample with the raw API ---
+        model = wrapper.model
+        tokenization_config = model.encoder.tokenization_config
+        normalizer = Normalizer(std_multiplier=2.0)
+
+        s2_ref = s2[..., [S2_BANDS.index(p) for _, p in S2_OLMOEARTH_TO_PROMETHEO]]
+        s1_ref = s1[..., [S1_BANDS.index(p) for _, p in S1_OLMOEARTH_TO_PROMETHEO]]
+        s2_ref = normalizer.normalize(Modality.SENTINEL2_L2A, s2_ref)
+        s1_ref = normalizer.normalize(Modality.SENTINEL1, s1_ref)
+
+        timestamps_ref = timestamps.copy()
+        timestamps_ref[:, :, 1] -= 1  # OlmoEarth expects zero-indexed months
+
+        online = MaskValue.ONLINE_ENCODER.value
+        s2_mask = np.full(
+            (b, h, w, t, tokenization_config.get_num_bandsets("sentinel2_l2a")),
+            online,
+            dtype=np.int64,
+        )
+        s1_mask = np.full(
+            (b, h, w, t, tokenization_config.get_num_bandsets("sentinel1")),
+            online,
+            dtype=np.int64,
+        )
+        reference_sample = MaskedOlmoEarthSample(
+            timestamps=torch.from_numpy(timestamps_ref).long(),
+            sentinel2_l2a=torch.from_numpy(s2_ref).float(),
+            sentinel2_l2a_mask=torch.from_numpy(s2_mask).long(),
+            sentinel1=torch.from_numpy(s1_ref).float(),
+            sentinel1_mask=torch.from_numpy(s1_mask).long(),
+        )
+
+        with torch.no_grad():
+            reference_encoder_output = model.encoder(
+                reference_sample,
+                patch_size=wrapper.patch_size,
+                input_res=wrapper.input_res,
+                fast_pass=wrapper.fast_pass,
+            )
+        reference_out = wrapper._apply_pooling(
+            wrapper._extract_embeddings(reference_encoder_output), PoolingMethods.TIME
+        )
+
+        self.assertEqual(wrapper_out.shape, reference_out.shape)
+        torch.testing.assert_close(wrapper_out, reference_out)
 
     @unittest.skipUnless(
         os.environ.get("PROMETHEO_TEST_OLMOEARTH_WEIGHTS") == "1",
