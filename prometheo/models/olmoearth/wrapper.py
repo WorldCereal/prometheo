@@ -129,6 +129,7 @@ def dataset_to_olmoearth_sample(
     x: Predictors,
     model_device: torch.device = device,
     tokenization_config=None,
+    replace_b8a_with_b8: bool = False,
 ):
     """Convert PromethEO predictors into an OlmoEarth masked sample.
 
@@ -145,6 +146,12 @@ def dataset_to_olmoearth_sample(
         tokenization_config: The model's ``TokenizationConfig``, used to build
             per-band-set masks. If ``None``, the OlmoEarth default tokenization
             is used.
+        replace_b8a_with_b8: Work around a data issue where Sentinel-2 B8A is
+            consistently missing. When ``True``, the B8A band is filled with the
+            (present) B8 band before masking and normalization. OlmoEarth groups
+            B8A into a band set with five other bands, so a missing B8A would
+            otherwise mark that whole band set MISSING and drop it from the
+            encoder. See the S2 handling below for details.
     """
 
     if x.timestamps is None:
@@ -171,8 +178,23 @@ def dataset_to_olmoearth_sample(
     if x.s2 is not None:
         s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
         s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
+        if replace_b8a_with_b8:
+            # Data-quality workaround: B8A is consistently missing, which would
+            # mark its whole band set MISSING and drop it. Substitute the present
+            # B8 band. Copying the *raw* B8 values into the B8A slot before the
+            # mask is built lets that band set be treated as present wherever B8
+            # is (and still MISSING if B8 or the band set's other bands are gone).
+            oe_s2_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
+            b8_idx = oe_s2_bands.index("B08")
+            b8a_idx = oe_s2_bands.index("B8A")
+            s2[..., b8a_idx] = s2[..., b8_idx]
         s2_mask = _make_modality_mask(s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config)
         s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
+        if replace_b8a_with_b8:
+            # The requirement is to normalize the substituted values with B8's
+            # stats. ``normalize`` used B8A's stats for the B8A slot, so overwrite
+            # it with the already-B8-normalized B08 column.
+            s2[..., b8a_idx] = s2[..., b8_idx]
         sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
         sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
 
@@ -216,6 +238,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         patch_size: int = 1,
         input_res: int = 10,
         fast_pass: Optional[bool] = None,
+        replace_b8a_with_b8: bool = False,
     ):
         """
         Args:
@@ -225,6 +248,11 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 (the default) to select it automatically per input — fast path
                 when nothing is masked, masked path otherwise. Pass a bool to
                 force it.
+            replace_b8a_with_b8: Work around a data issue where Sentinel-2 B8A is
+                consistently missing. When ``True``, the B8A band is filled with
+                the (present) B8 band (normalized with B8's stats) and its mask is
+                no longer marked MISSING on account of B8A. See
+                ``dataset_to_olmoearth_sample``.
         """
         super().__init__()
         load_model_from_id = _olmoearth().load_model_from_id
@@ -232,6 +260,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         self.patch_size = patch_size
         self.input_res = input_res
         self.fast_pass = fast_pass
+        self.replace_b8a_with_b8 = replace_b8a_with_b8
         self.head: Optional[nn.Module] = None
         if num_outputs is not None:
             hidden_size = getattr(getattr(self.model, "encoder", self.model), "embedding_size", None)
@@ -256,7 +285,10 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         model_device = next(self.parameters(), torch.empty(0, device=device)).device
         tokenization_config = getattr(self.model.encoder, "tokenization_config", None)
         sample = dataset_to_olmoearth_sample(
-            x, model_device=model_device, tokenization_config=tokenization_config
+            x,
+            model_device=model_device,
+            tokenization_config=tokenization_config,
+            replace_b8a_with_b8=self.replace_b8a_with_b8,
         )
         encoder_output = self.model.encoder(
             sample,

@@ -112,6 +112,39 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         grouped = dataset_to_olmoearth_sample(x, tokenization_config=per_band)
         self.assertEqual(grouped.sentinel2_l2a_mask.shape[-1], len(S2_OLMOEARTH_TO_PROMETHEO))
 
+    def test_replace_b8a_with_b8_fills_band_and_unmasks(self):
+        # B8A is consistently missing in the data; replace_b8a_with_b8 should fill
+        # it with B8 (normalized with B8's stats) and stop marking its band set
+        # (band set 1) MISSING.
+        b, h, w, t = 1, 1, 1, 1
+        s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
+        # Give B8 a distinct value so we can tell the substitution happened, and
+        # knock out B8A entirely to simulate the data issue.
+        s2[:, :, :, :, S2_BANDS.index("B8")] = 1234.0
+        s2[:, :, :, :, S2_BANDS.index("B8A")] = NODATAVALUE
+        timestamps = np.array([[[1, 1, 2024]]])
+        x = Predictors(s2=s2, timestamps=timestamps)
+
+        oe_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
+        b8_idx = oe_bands.index("B08")
+        b8a_idx = oe_bands.index("B8A")
+
+        # Without the workaround: B8A is missing, so band set 1 is MISSING (3).
+        baseline = dataset_to_olmoearth_sample(x, model_device=torch.device("cpu"))
+        self.assertEqual(baseline.sentinel2_l2a_mask[0, 0, 0, 0, 1].item(), 3)
+
+        # With the workaround: band set 1 is present (0) and the B8A slot equals
+        # the B8-normalized B08 slot rather than a normalized NODATAVALUE.
+        fixed = dataset_to_olmoearth_sample(
+            x, model_device=torch.device("cpu"), replace_b8a_with_b8=True
+        )
+        self.assertEqual(fixed.sentinel2_l2a_mask[0, 0, 0, 0, 1].item(), 0)
+        self.assertTrue(
+            torch.allclose(
+                fixed.sentinel2_l2a[..., b8a_idx], fixed.sentinel2_l2a[..., b8_idx]
+            )
+        )
+
     def test_wrapper_global_pooling_collapses_time(self):
         # Spatial dims must be divisible by the patch size; a 16x16 input with
         # patch_size=8 yields a 2x2 patch grid.
