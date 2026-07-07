@@ -157,6 +157,74 @@ class TestPresto(unittest.TestCase):
         )
 
 
+class TestLatlonDropout(unittest.TestCase):
+    @staticmethod
+    def _make_predictors(latlon, s1, timestamps):
+        return Predictors(s1=s1, latlon=latlon, timestamps=timestamps)
+
+    def _fixed_inputs(self):
+        b, t, h, w = 4, 4, 1, 1
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
+        rng = np.random.RandomState(0)
+        s1 = rng.rand(b, h, w, t, len(S1_BANDS))
+        timestamps = repeat(timestamps_per_instance, "t d -> b t d", b=b)
+        latlon_a = np.zeros((b, h, w, 2))
+        latlon_b = np.full((b, h, w, 2), 45.0)
+        return s1, timestamps, latlon_a, latlon_b
+
+    def test_full_dropout_masks_latlon_during_training(self):
+        # With latlon_dropout=1.0 in train mode the latlon token is always
+        # masked, so the embeddings must be invariant to the latlon values.
+        s1, timestamps, latlon_a, latlon_b = self._fixed_inputs()
+        model = Presto(latlon_dropout=1.0)
+        model.train()
+        out_a = model(
+            self._make_predictors(latlon_a, s1, timestamps),
+            eval_pooling=PoolingMethods.GLOBAL,
+        )
+        out_b = model(
+            self._make_predictors(latlon_b, s1, timestamps),
+            eval_pooling=PoolingMethods.GLOBAL,
+        )
+        self.assertTrue(torch.allclose(out_a, out_b))
+
+    def test_no_dropout_keeps_latlon(self):
+        # Without dropout the latlon token is kept, so different latlons must
+        # produce different embeddings.
+        s1, timestamps, latlon_a, latlon_b = self._fixed_inputs()
+        model = Presto(latlon_dropout=0.0)
+        model.train()
+        out_a = model(
+            self._make_predictors(latlon_a, s1, timestamps),
+            eval_pooling=PoolingMethods.GLOBAL,
+        )
+        out_b = model(
+            self._make_predictors(latlon_b, s1, timestamps),
+            eval_pooling=PoolingMethods.GLOBAL,
+        )
+        self.assertFalse(torch.allclose(out_a, out_b))
+
+    def test_dropout_disabled_in_eval_mode(self):
+        # Dropout only applies while training; in eval mode the latlon token is
+        # kept even with latlon_dropout=1.0.
+        s1, timestamps, latlon_a, latlon_b = self._fixed_inputs()
+        model = Presto(latlon_dropout=1.0)
+        model.eval()
+        out_a = model(
+            self._make_predictors(latlon_a, s1, timestamps),
+            eval_pooling=PoolingMethods.GLOBAL,
+        )
+        out_b = model(
+            self._make_predictors(latlon_b, s1, timestamps),
+            eval_pooling=PoolingMethods.GLOBAL,
+        )
+        self.assertFalse(torch.allclose(out_a, out_b))
+
+    def test_invalid_dropout_raises(self):
+        with self.assertRaises(ValueError):
+            Presto(latlon_dropout=1.5)
+
+
 class TestNormalize(unittest.TestCase):
     def test_ndvi_mask_propagated_at_masked_s2_timesteps(self):
         # Regression: when S2 is masked at the input, the NDVI position
