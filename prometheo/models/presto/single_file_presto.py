@@ -584,9 +584,10 @@ class Encoder(nn.Module):
             if eval_pooling == "global":
                 # set masked tokens to 0
                 x_for_mean = x * (1 - upd_mask.unsqueeze(-1))
-                x_mean = x_for_mean.sum(dim=1) / torch.sum(
-                    1 - upd_mask, -1, keepdim=True
+                valid_count = torch.clamp(
+                    torch.sum(1 - upd_mask, -1, keepdim=True), min=1.0
                 )
+                x_mean = x_for_mean.sum(dim=1) / valid_count
                 return self.norm(x_mean)
             else:
                 filled_x = self.add_masked_tokens_with_zeros(x, orig_indices, upd_mask)
@@ -597,9 +598,12 @@ class Encoder(nn.Module):
                 )
                 # x, mask have shape [b, timesteps, token_per_timesteps, dim]
                 x_for_mean = x_per_timestep * (1 - mask_per_timestep.unsqueeze(-1))
-                x_mean = x_for_mean.sum(dim=2) / torch.sum(
-                    1 - mask_per_timestep, -1, keepdim=True
+                # clamp denominator to >=1 so fully-masked timesteps yield a
+                # zero embedding rather than NaN (0/0).  
+                valid_count = torch.clamp(
+                    torch.sum(1 - mask_per_timestep, -1, keepdim=True), min=1.0
                 )
+                x_mean = x_for_mean.sum(dim=2) / valid_count
                 return self.norm(x_mean)
 
         return self.norm(x), orig_indices, upd_mask
