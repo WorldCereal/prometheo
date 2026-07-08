@@ -6,7 +6,7 @@ from einops import repeat
 
 from prometheo.models import Presto
 from prometheo.models.pooling import PoolingMethods
-from prometheo.models.presto.single_file_presto import BANDS
+from prometheo.models.presto.single_file_presto import BANDS, BANDS_GROUPS_IDX
 from prometheo.models.presto.wrapper import dataset_to_model
 from prometheo.predictors import (
     DEM_BANDS,
@@ -265,3 +265,101 @@ class TestNormalize(unittest.TestCase):
         # Timesteps 0 and 3 had real S2 -> NDVI must be unmasked there.
         self.assertFalse(ndvi_mask_per_timestep[0, 0])
         self.assertFalse(ndvi_mask_per_timestep[0, 3])
+
+
+class TestFullyMaskedTimestepPooling(unittest.TestCase):
+    """Regression tests for the NaN ``val_loss`` seen in finetuning.
+
+    Causal chain (why it started after the last two prometheo upgrades):
+
+    * The NDVI mask-propagation fix (commit e57125c) makes the NDVI token
+      correctly *masked* at cloud-masked S2 timesteps. Previously it survived
+      as a phantom "valid" NDVI = 0 token.
+    * ``dataset_to_model`` always emits ``dynamic_world`` as the missing class
+      (so it is always masked), and any modality that is absent (S1/meteo/DEM)
+      is masked too.
+    * Therefore, when S2 is the only modality present, a fully cloud-masked S2
+      timestep now has *zero* valid tokens. In ``eval_pooling="time"`` the
+      masked mean divides the (zero) token sum by the (zero) valid-token count
+      -> 0 / 0 -> NaN embeddings -> NaN ``val_loss``.
+    * The encoder now clamps that denominator to >= 1, so a fully-masked
+      timestep pools to a finite (zero) embedding instead of NaN.
+    """
+
+    @staticmethod
+    def _s2_only_predictors(mask_timesteps):
+        # S2 is the only modality -> S1 / meteo / DEM (SRTM) and dynamic_world
+        # are all masked, so S2 groups + NDVI are the only tokens that can be
+        # valid. This is what makes a cloud-masked timestep *fully* masked.
+        b, t, h, w = 2, 4, 1, 1
+        rng = np.random.RandomState(0)
+        s2 = rng.uniform(500, 5000, size=(b, h, w, t, len(S2_BANDS))).astype(
+            np.float32
+        )
+        for ts in mask_timesteps:
+            s2[:, :, :, ts, :] = NODATAVALUE  # fully mask this timestep
+        timestamps_per_instance = np.array([[2020, m + 1, 1] for m in range(t)])
+        x = Predictors(
+            s2=s2,
+            latlon=np.zeros((b, h, w, 2), dtype=np.float32),
+            timestamps=repeat(timestamps_per_instance, "t d -> b t d", b=b),
+        )
+        return x, (b, t, h, w)
+
+    @staticmethod
+    def _valid_group_counts(mask):
+        # Mirror the encoder: a channel-group token is valid at a timestep iff
+        # *all* of its bands are valid (the encoder takes ``max`` over the band
+        # masks, i.e. the group is masked if any of its bands is masked).
+        # Returns the number of valid channel-group tokens per [sample, timestep].
+        n, t, _ = mask.shape
+        counts = np.zeros((n, t), dtype=int)
+        for _, idxs in BANDS_GROUPS_IDX.items():
+            group_masked = mask[:, :, idxs].any(axis=-1)
+            counts += (~group_masked).astype(int)
+        return counts
+
+    def test_masked_s2_timestep_is_fully_masked_due_to_ndvi(self):
+        # Confirms the *cause*: with only S2 present, the NDVI mask fix removes
+        # the last surviving token at a cloud-masked timestep, driving the
+        # valid-token count to 0 (the 0/0 precondition for the pooling NaN).
+        masked_ts, clear_ts = [1, 2], [0, 3]
+        x, _ = self._s2_only_predictors(masked_ts)
+        _, mask, *_ = dataset_to_model(x)
+        mask = np.asarray(mask).astype(bool)  # [n, t, total_bands]
+        ndvi_idx = BANDS.index("NDVI")
+
+        # 1) NDVI-update behaviour: NDVI masked exactly at cloud-masked S2 steps.
+        for ts in masked_ts:
+            self.assertTrue(mask[:, ts, ndvi_idx].all())
+        for ts in clear_ts:
+            self.assertFalse(mask[:, ts, ndvi_idx].any())
+
+        # 2) Those timesteps have zero valid tokens -> 0/0 in the masked mean.
+        counts = self._valid_group_counts(mask)
+        for ts in masked_ts:
+            self.assertTrue((counts[:, ts] == 0).all())
+        for ts in clear_ts:
+            self.assertTrue((counts[:, ts] > 0).all())
+
+        # 3) Causality: NDVI is the *only* token whose masking drops the count
+        #    to 0. Simulating the pre-fix "phantom valid" NDVI token restores a
+        #    single valid token (denominator 1 -> no NaN), which pins the NaN on
+        #    the NDVI mask introduced by the mask-propagation fix.
+        premask = mask.copy()
+        premask[:, masked_ts, ndvi_idx] = False
+        pre_counts = self._valid_group_counts(premask)
+        for ts in masked_ts:
+            self.assertTrue((pre_counts[:, ts] == 1).all())
+
+    def test_time_pooling_is_finite_with_fully_masked_timestep(self):
+        # The actual regression: before the denominator clamp, the fully-masked
+        # timesteps pooled to 0/0 = NaN and propagated into val_loss. With the
+        # clamp they pool to a finite (zero) embedding.
+        masked_ts = [1, 2]
+        x, (b, t, h, w) = self._s2_only_predictors(masked_ts)
+        model = Presto()
+        model.eval()
+        out = model(x, eval_pooling=PoolingMethods.TIME)
+        self.assertEqual(out.shape, (b, h, w, t, model.encoder.embedding_size))
+        self.assertTrue(torch.isfinite(out).all())
