@@ -35,6 +35,11 @@ S2_OLMOEARTH_TO_PROMETHEO = [
     ("B09", "B9"),
 ]
 S1_OLMOEARTH_TO_PROMETHEO = [("vv", "VV"), ("vh", "VH")]
+# Spectrally-nearest present band for each consistently-missing S2 band:
+# B8A (865nm) <- B08 (842nm), B01 (443nm) <- B02 (490nm), B09 (945nm) <- B08
+# (its true neighbour B8A is itself missing in the data).
+S2_B8A_SUBSTITUTE = ("B8A", "B08")
+S2_B1_B9_SUBSTITUTES = [("B01", "B02"), ("B09", "B08")]
 
 
 def _missing_dependency_error() -> ImportError:
@@ -125,11 +130,31 @@ def _make_modality_mask(
     return np.stack(per_bandset, axis=-1).astype(np.int64)
 
 
+def _b1_b9_share_bandset_with_other_bands(tokenization_config) -> bool:
+    """Whether the model tokenizes B01/B09 together with other S2 bands.
+
+    OlmoEarth v1 gives the 60m atmospheric bands (B01, B09) a band set of
+    their own, so when both are missing only that band set is marked MISSING
+    and dropped by the encoder — no other band is affected and no
+    substitution is needed. v1.1 and v1.2 tokenize all twelve S2 bands as a
+    single band set, so missing B01/B09 would mark the whole Sentinel-2
+    modality MISSING at every location; there, substitution is required.
+    """
+    oe_s2_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
+    atmospheric = {oe_s2_bands.index("B01"), oe_s2_bands.index("B09")}
+    bandsets = tokenization_config.get_bandset_indices(
+        _olmoearth().Modality.SENTINEL2_L2A.name
+    )
+    return any(
+        (atmospheric & set(idxs)) and (set(idxs) - atmospheric) for idxs in bandsets
+    )
+
+
 def dataset_to_olmoearth_sample(
     x: Predictors,
     model_device: torch.device = device,
     tokenization_config=None,
-    replace_b8a_with_b8: bool = False,
+    replace_b1_b9_b8a: bool = False,
 ):
     """Convert PromethEO predictors into an OlmoEarth masked sample.
 
@@ -146,12 +171,15 @@ def dataset_to_olmoearth_sample(
         tokenization_config: The model's ``TokenizationConfig``, used to build
             per-band-set masks. If ``None``, the OlmoEarth default tokenization
             is used.
-        replace_b8a_with_b8: Work around a data issue where Sentinel-2 B8A is
-            consistently missing. When ``True``, the B8A band is filled with the
-            (present) B8 band before masking and normalization. OlmoEarth groups
-            B8A into a band set with five other bands, so a missing B8A would
-            otherwise mark that whole band set MISSING and drop it from the
-            encoder. See the S2 handling below for details.
+        replace_b1_b9_b8a: Work around a data issue where the Sentinel-2 bands
+            B8A, B01 and B09 are consistently missing. A missing band marks its
+            whole band set MISSING and drops it from the encoder, so when
+            ``True`` the missing bands are filled from spectrally-adjacent
+            present bands (each normalized with the source band's stats):
+            B8A from B08, and — only when the model tokenizes B01/B09 together
+            with other bands (v1.1/v1.2) — B01 from B02 and B09 from B08. Under
+            v1 tokenization B01/B09 form their own band set, so they are left
+            masked MISSING and simply dropped by the encoder.
     """
 
     if x.timestamps is None:
@@ -178,23 +206,31 @@ def dataset_to_olmoearth_sample(
     if x.s2 is not None:
         s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
         s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
-        if replace_b8a_with_b8:
-            # Data-quality workaround: B8A is consistently missing, which would
-            # mark its whole band set MISSING and drop it. Substitute the present
-            # B8 band. Copying the *raw* B8 values into the B8A slot before the
-            # mask is built lets that band set be treated as present wherever B8
-            # is (and still MISSING if B8 or the band set's other bands are gone).
-            oe_s2_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
-            b8_idx = oe_s2_bands.index("B08")
-            b8a_idx = oe_s2_bands.index("B8A")
-            s2[..., b8a_idx] = s2[..., b8_idx]
+        # Data-quality workarounds for consistently-missing bands that share a
+        # band set with present bands (a missing band marks its whole band set
+        # MISSING and drops it from the encoder). Copying the *raw* source
+        # values into the target slot before the mask is built lets that band
+        # set be treated as present wherever the source is (and still MISSING
+        # if the source or the band set's other bands are gone). B01/B09 are
+        # only substituted when the tokenization groups them with other bands
+        # (v1.1/v1.2); under v1 they form their own band set, which is simply
+        # masked MISSING and dropped.
+        substitutions = []
+        if replace_b1_b9_b8a:
+            substitutions.append(S2_B8A_SUBSTITUTE)
+            if _b1_b9_share_bandset_with_other_bands(tokenization_config):
+                substitutions.extend(S2_B1_B9_SUBSTITUTES)
+        oe_s2_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
+        for target, source in substitutions:
+            s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
         s2_mask = _make_modality_mask(s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config)
         s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
-        if replace_b8a_with_b8:
-            # The requirement is to normalize the substituted values with B8's
-            # stats. ``normalize`` used B8A's stats for the B8A slot, so overwrite
-            # it with the already-B8-normalized B08 column.
-            s2[..., b8a_idx] = s2[..., b8_idx]
+        for target, source in substitutions:
+            # The requirement is to normalize substituted values with the
+            # *source* band's stats. ``normalize`` used the target's stats for
+            # the target slot, so overwrite it with the already-normalized
+            # source column.
+            s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
         sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
         sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
 
@@ -238,7 +274,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         patch_size: int = 1,
         input_res: int = 10,
         fast_pass: Optional[bool] = None,
-        replace_b8a_with_b8: bool = False,
+        replace_b1_b9_b8a: bool = False,
     ):
         """
         Args:
@@ -248,11 +284,15 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 (the default) to select it automatically per input — fast path
                 when nothing is masked, masked path otherwise. Pass a bool to
                 force it.
-            replace_b8a_with_b8: Work around a data issue where Sentinel-2 B8A is
-                consistently missing. When ``True``, the B8A band is filled with
-                the (present) B8 band (normalized with B8's stats) and its mask is
-                no longer marked MISSING on account of B8A. See
-                ``dataset_to_olmoearth_sample``.
+            replace_b1_b9_b8a: Work around a data issue where the Sentinel-2
+                bands B8A, B01 and B09 are consistently missing. When ``True``,
+                B8A is filled with the (present) B8 band, and — for models that
+                tokenize B01/B09 together with the other S2 bands (v1.1/v1.2) —
+                B01 with B02 and B09 with B08 (each normalized with the source
+                band's stats), so the missing bands don't mark their band set
+                MISSING. For models that give B01/B09 their own band set (v1),
+                that band set is left masked MISSING and dropped by the
+                encoder. See ``dataset_to_olmoearth_sample``.
         """
         super().__init__()
         load_model_from_id = _olmoearth().load_model_from_id
@@ -260,7 +300,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         self.patch_size = patch_size
         self.input_res = input_res
         self.fast_pass = fast_pass
-        self.replace_b8a_with_b8 = replace_b8a_with_b8
+        self.replace_b1_b9_b8a = replace_b1_b9_b8a
         self.head: Optional[nn.Module] = None
         if num_outputs is not None:
             hidden_size = getattr(getattr(self.model, "encoder", self.model), "embedding_size", None)
@@ -288,7 +328,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
             x,
             model_device=model_device,
             tokenization_config=tokenization_config,
-            replace_b8a_with_b8=self.replace_b8a_with_b8,
+            replace_b1_b9_b8a=self.replace_b1_b9_b8a,
         )
         encoder_output = self.model.encoder(
             sample,

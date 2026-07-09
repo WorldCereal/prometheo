@@ -112,8 +112,8 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         grouped = dataset_to_olmoearth_sample(x, tokenization_config=per_band)
         self.assertEqual(grouped.sentinel2_l2a_mask.shape[-1], len(S2_OLMOEARTH_TO_PROMETHEO))
 
-    def test_replace_b8a_with_b8_fills_band_and_unmasks(self):
-        # B8A is consistently missing in the data; replace_b8a_with_b8 should fill
+    def test_replace_b1_b9_b8a_fills_b8a_and_unmasks(self):
+        # B8A is consistently missing in the data; replace_b1_b9_b8a should fill
         # it with B8 (normalized with B8's stats) and stop marking its band set
         # (band set 1) MISSING.
         b, h, w, t = 1, 1, 1, 1
@@ -136,7 +136,7 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         # With the workaround: band set 1 is present (0) and the B8A slot equals
         # the B8-normalized B08 slot rather than a normalized NODATAVALUE.
         fixed = dataset_to_olmoearth_sample(
-            x, model_device=torch.device("cpu"), replace_b8a_with_b8=True
+            x, model_device=torch.device("cpu"), replace_b1_b9_b8a=True
         )
         self.assertEqual(fixed.sentinel2_l2a_mask[0, 0, 0, 0, 1].item(), 0)
         self.assertTrue(
@@ -144,6 +144,89 @@ class TestOlmoEarthAdapter(unittest.TestCase):
                 fixed.sentinel2_l2a[..., b8a_idx], fixed.sentinel2_l2a[..., b8_idx]
             )
         )
+
+    def test_replace_b1_b9_b8a_drops_b1_b9_under_v1_tokenization(self):
+        # OlmoEarth v1 gives B01/B09 their own band set (band set 2), so when
+        # they are missing that band set alone is masked MISSING and dropped —
+        # replace_b1_b9_b8a must not fabricate values there.
+        b, h, w, t = 1, 1, 1, 1
+        s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
+        s2[:, :, :, :, S2_BANDS.index("B1")] = NODATAVALUE
+        s2[:, :, :, :, S2_BANDS.index("B9")] = NODATAVALUE
+        x = Predictors(s2=s2, timestamps=np.array([[[1, 1, 2024]]]))
+
+        # The default tokenization is the v1 grouping.
+        sample = dataset_to_olmoearth_sample(
+            x, model_device=torch.device("cpu"), replace_b1_b9_b8a=True
+        )
+
+        # Band sets 0 and 1 present, the atmospheric band set MISSING (3).
+        self.assertEqual(sample.sentinel2_l2a_mask[0, 0, 0, 0].tolist(), [0, 0, 3])
+
+    def test_replace_b1_b9_b8a_fills_b1_b9_under_v1_2_tokenization(self):
+        from olmoearth_pretrain_minimal import ModelID, load_model_from_id
+
+        # v1.2 tokenizes all twelve S2 bands as a single band set, so missing
+        # B01/B09 would mark the whole Sentinel-2 modality MISSING. With the
+        # workaround, B01 is filled from B02 and B09 from B08 (each normalized
+        # with the source band's stats) and the band set stays present.
+        model = load_model_from_id(ModelID.OLMOEARTH_V1_2_NANO, load_weights=False)
+        tokenization_config = model.encoder.tokenization_config
+
+        b, h, w, t = 1, 1, 1, 1
+        s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
+        s2[:, :, :, :, S2_BANDS.index("B2")] = 567.0
+        s2[:, :, :, :, S2_BANDS.index("B8")] = 1234.0
+        s2[:, :, :, :, S2_BANDS.index("B1")] = NODATAVALUE
+        s2[:, :, :, :, S2_BANDS.index("B9")] = NODATAVALUE
+        x = Predictors(s2=s2, timestamps=np.array([[[1, 1, 2024]]]))
+
+        baseline = dataset_to_olmoearth_sample(
+            x, model_device=torch.device("cpu"), tokenization_config=tokenization_config
+        )
+        self.assertEqual(baseline.sentinel2_l2a_mask.shape[-1], 1)
+        self.assertEqual(baseline.sentinel2_l2a_mask[0, 0, 0, 0, 0].item(), 3)
+
+        fixed = dataset_to_olmoearth_sample(
+            x,
+            model_device=torch.device("cpu"),
+            tokenization_config=tokenization_config,
+            replace_b1_b9_b8a=True,
+        )
+        self.assertEqual(fixed.sentinel2_l2a_mask[0, 0, 0, 0, 0].item(), 0)
+        oe_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
+        self.assertTrue(
+            torch.allclose(
+                fixed.sentinel2_l2a[..., oe_bands.index("B01")],
+                fixed.sentinel2_l2a[..., oe_bands.index("B02")],
+            )
+        )
+        self.assertTrue(
+            torch.allclose(
+                fixed.sentinel2_l2a[..., oe_bands.index("B09")],
+                fixed.sentinel2_l2a[..., oe_bands.index("B08")],
+            )
+        )
+
+    def test_wrapper_replace_b1_b9_b8a_forward_pass(self):
+        # End to end: the default wrapper model is v1.2, whose single S2 band
+        # set would go entirely MISSING without the workaround.
+        b, h, w, t = 1, 16, 16, 2
+        timestamps = repeat(
+            np.array([[1, m + 1, 2024] for m in range(t)]), "t d -> b t d", b=b
+        )
+        s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
+        s2[..., S2_BANDS.index("B1")] = NODATAVALUE
+        s2[..., S2_BANDS.index("B9")] = NODATAVALUE
+        x = Predictors(s2=s2, timestamps=timestamps)
+
+        model = PretrainedOlmoEarthWrapper(
+            load_weights=False, patch_size=8, replace_b1_b9_b8a=True
+        )
+        output = model(x, eval_pooling=PoolingMethods.GLOBAL)
+
+        self.assertEqual(output.shape[:4], (b, h // model.patch_size, w // model.patch_size, 1))
+        self.assertTrue(torch.isfinite(output).all())
 
     def test_wrapper_global_pooling_collapses_time(self):
         # Spatial dims must be divisible by the patch size; a 16x16 input with
