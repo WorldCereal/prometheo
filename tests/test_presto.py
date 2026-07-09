@@ -6,7 +6,11 @@ from einops import repeat
 
 from prometheo.models import Presto
 from prometheo.models.pooling import PoolingMethods
-from prometheo.models.presto.single_file_presto import BANDS, BANDS_GROUPS_IDX
+from prometheo.models.presto.single_file_presto import (
+    BANDS,
+    BANDS_GROUPS_IDX,
+    Encoder,
+)
 from prometheo.models.presto.wrapper import dataset_to_model
 from prometheo.predictors import (
     DEM_BANDS,
@@ -223,6 +227,49 @@ class TestLatlonDropout(unittest.TestCase):
     def test_invalid_dropout_raises(self):
         with self.assertRaises(ValueError):
             Presto(latlon_dropout=1.5)
+
+
+class TestTimePoolingLatlonToken(unittest.TestCase):
+    # Regression tests for the time-pooling path: the latlon token must be
+    # removed from filled_x before rearrange_to_time. A previous bug stripped
+    # it from `x` (which is unused after that point) instead, so the latlon
+    # token was pooled into timestep 0 and every other token was read one
+    # position off. With depth=0 there is no attention, so tokens cannot mix:
+    # any cross-timestep or latlon influence on the pooled output can only
+    # come from that misalignment.
+
+    def _encoder_and_inputs(self):
+        torch.manual_seed(42)
+        encoder = Encoder(depth=0)
+        encoder.eval()
+        b, t = 2, 3
+        x = torch.randn(b, t, len(BANDS))
+        dynamic_world = torch.zeros(b, t).long()
+        return encoder, x, dynamic_world
+
+    def test_time_pooling_is_invariant_to_latlon(self):
+        encoder, x, dynamic_world = self._encoder_and_inputs()
+        latlons_a = torch.tensor([[0.0, 0.0], [10.0, 20.0]])
+        latlons_b = torch.tensor([[45.0, 90.0], [-60.0, 120.0]])
+        with torch.no_grad():
+            out_a = encoder(x, dynamic_world, latlons_a, eval_pooling="time")
+            out_b = encoder(x, dynamic_world, latlons_b, eval_pooling="time")
+        self.assertTrue(torch.equal(out_a, out_b))
+
+    def test_time_pooling_respects_timestep_boundaries(self):
+        encoder, x, dynamic_world = self._encoder_and_inputs()
+        latlons = torch.zeros(2, 2)
+        x_perturbed = x.clone()
+        x_perturbed[:, -1, :] += 1.0
+        with torch.no_grad():
+            out = encoder(x, dynamic_world, latlons, eval_pooling="time")
+            out_perturbed = encoder(
+                x_perturbed, dynamic_world, latlons, eval_pooling="time"
+            )
+        # perturbing the last timestep must not change earlier timesteps...
+        self.assertTrue(torch.equal(out[:, :-1], out_perturbed[:, :-1]))
+        # ...but must change the last one
+        self.assertFalse(torch.allclose(out[:, -1], out_perturbed[:, -1]))
 
 
 class TestNormalize(unittest.TestCase):
