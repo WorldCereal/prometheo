@@ -607,14 +607,14 @@ class Encoder(nn.Module):
                 # For time-pooling case
                 filled_x = self.add_masked_tokens_with_zeros(x, orig_indices, upd_mask)
                 # remove the latlon token
-                x = x[:, 1:, :]
+                filled_x = filled_x[:, 1:, :]
                 x_per_timestep, mask_per_timestep = self.rearrange_to_time(
                     filled_x, mask, num_timesteps
                 )
                 # x, mask have shape [b, timesteps, token_per_timesteps, dim]
                 x_for_mean = x_per_timestep * (1 - mask_per_timestep.unsqueeze(-1))
                 # clamp denominator to >=1 so fully-masked timestep yields a
-                # zero embedding rather than NaN (0/0).  
+                # zero embedding rather than NaN (0/0).
                 valid_count = torch.clamp(
                     torch.sum(1 - mask_per_timestep, -1, keepdim=True), min=1.0
                 )
