@@ -310,11 +310,19 @@ class Encoder(nn.Module):
         mlp_ratio=2,
         num_heads=8,
         max_sequence_length=24,
+        latlon_dropout: float = 0.0,
     ):
         super().__init__()
 
         self.band_groups = BANDS_GROUPS_IDX
         self.embedding_size = embedding_size
+        # probability with which the latlon token is masked out during training.
+        # if 0, the latlon token is always kept.
+        if not (0.0 <= latlon_dropout <= 1.0):
+            raise ValueError(
+                f"latlon_dropout must be in [0, 1], got {latlon_dropout}"
+            )
+        self.latlon_dropout = latlon_dropout
 
         # this is used for the channel embedding
         self.band_group_to_idx = {
@@ -548,9 +556,16 @@ class Encoder(nn.Module):
         # append latlon tokens
         latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
         x = torch.cat((latlon_tokens, x), dim=1)
-        upd_mask = torch.cat(
-            (torch.zeros(x.shape[0])[:, None].to(device), upd_mask), dim=1
-        )
+        # by default the latlon token is always kept (mask value 0). If latlon
+        # dropout is enabled, drop (mask) it per-example with the given
+        # probability while training so the model learns to cope without it.
+        if self.training and (self.latlon_dropout > 0):
+            latlon_mask = torch.bernoulli(
+                torch.full((x.shape[0], 1), self.latlon_dropout, device=device)
+            )
+        else:
+            latlon_mask = torch.zeros(x.shape[0])[:, None].to(device)
+        upd_mask = torch.cat((latlon_mask, upd_mask), dim=1)
         orig_indices = torch.cat(
             (torch.zeros(x.shape[0])[:, None].to(device).int(), orig_indices + 1),
             dim=1,
@@ -569,22 +584,45 @@ class Encoder(nn.Module):
             if eval_pooling == "global":
                 # set masked tokens to 0
                 x_for_mean = x * (1 - upd_mask.unsqueeze(-1))
-                x_mean = x_for_mean.sum(dim=1) / torch.sum(
-                    1 - upd_mask, -1, keepdim=True
-                )
+                raw_count = torch.sum(1 - upd_mask, -1, keepdim=True)
+                n_empty = int((raw_count == 0).sum().item())
+                if n_empty > 0:
+                    if self.training:
+                        # expected edge case during augmentation (e.g. disable-sensor + latlon dropout)
+                        import warnings
+                        warnings.warn(
+                            f"{n_empty} sample(s) in this batch have all tokens masked "
+                            "(likely disable-sensor + latlon_dropout). Returning LayerNorm "
+                            "bias as embedding. Consider reducing dem_dropout_prob or latlon_dropout."
+                        )
+                    else:
+                        raise ValueError(
+                            f"{n_empty} sample(s) have all tokens masked at inference time. "
+                            "Check that the input data is not entirely missing."
+                        )
+                valid_count = torch.clamp(raw_count, min=1.0)
+                x_mean = x_for_mean.sum(dim=1) / valid_count
                 return self.norm(x_mean)
             else:
+                # For time-pooling case
                 filled_x = self.add_masked_tokens_with_zeros(x, orig_indices, upd_mask)
                 # remove the latlon token
-                x = x[:, 1:, :]
+                filled_x = filled_x[:, 1:, :]
                 x_per_timestep, mask_per_timestep = self.rearrange_to_time(
                     filled_x, mask, num_timesteps
                 )
                 # x, mask have shape [b, timesteps, token_per_timesteps, dim]
                 x_for_mean = x_per_timestep * (1 - mask_per_timestep.unsqueeze(-1))
-                x_mean = x_for_mean.sum(dim=2) / torch.sum(
-                    1 - mask_per_timestep, -1, keepdim=True
-                )
+                raw_valid_count = torch.sum(1 - mask_per_timestep, -1, keepdim=True)
+                # clamp denominator to >=1 so fully-masked timestep yields a
+                # zero embedding rather than NaN (0/0).
+                valid_count = torch.clamp(raw_valid_count, min=1.0)
+                x_mean = x_for_mean.sum(dim=2) / valid_count
+                # stops grad from flowing for those masked positions while
+                # leaving real timesteps completely unchanged. correcting the  
+                # LayerNorm bias (beta) term
+                fully_masked = (raw_valid_count == 0).expand_as(x_mean)
+                x_mean = torch.where(fully_masked, torch.zeros_like(x_mean), x_mean)
                 return self.norm(x_mean)
 
         return self.norm(x), orig_indices, upd_mask
@@ -883,6 +921,7 @@ class Presto(nn.Module):
         decoder_depth=2,
         decoder_num_heads=8,
         max_sequence_length=24,
+        latlon_dropout: float = 0.0,
     ):
         encoder = Encoder(
             embedding_size=encoder_embedding_size,
@@ -892,6 +931,7 @@ class Presto(nn.Module):
             mlp_ratio=mlp_ratio,
             num_heads=encoder_num_heads,
             max_sequence_length=max_sequence_length,
+            latlon_dropout=latlon_dropout,
         )
         decoder = Decoder(
             channel_embeddings=encoder.channel_embed,
