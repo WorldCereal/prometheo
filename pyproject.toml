@@ -44,6 +44,9 @@ dev = [
   "types-requests~=2.32.0",
   "mypy==1.11.2"
 ]
+olmoearth = [
+  "olmoearth-pretrain-minimal>=0.0.6; python_version >= '3.11'"
+]
 train = [
 ]
 

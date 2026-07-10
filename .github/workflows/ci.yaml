@@ -27,6 +27,6 @@ jobs:
     - name: mypy
       run: python -m mypy .
     - name: Install PromethEO dependencies
-      run: pip install ".[dev,train]"
+      run: pip install ".[dev,train,olmoearth]"
     - name: Run PromethEO tests
       run: python -m unittest discover -s tests
