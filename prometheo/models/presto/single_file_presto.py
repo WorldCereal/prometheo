@@ -613,12 +613,16 @@ class Encoder(nn.Module):
                 )
                 # x, mask have shape [b, timesteps, token_per_timesteps, dim]
                 x_for_mean = x_per_timestep * (1 - mask_per_timestep.unsqueeze(-1))
+                raw_valid_count = torch.sum(1 - mask_per_timestep, -1, keepdim=True)
                 # clamp denominator to >=1 so fully-masked timestep yields a
                 # zero embedding rather than NaN (0/0).
-                valid_count = torch.clamp(
-                    torch.sum(1 - mask_per_timestep, -1, keepdim=True), min=1.0
-                )
+                valid_count = torch.clamp(raw_valid_count, min=1.0)
                 x_mean = x_for_mean.sum(dim=2) / valid_count
+                # stops grad from flowing for those masked positions while
+                # leaving real timesteps completely unchanged. correcting the  
+                # LayerNorm bias (beta) term
+                fully_masked = (raw_valid_count == 0).expand_as(x_mean)
+                x_mean = torch.where(fully_masked, torch.zeros_like(x_mean), x_mean)
                 return self.norm(x_mean)
 
         return self.norm(x), orig_indices, upd_mask
