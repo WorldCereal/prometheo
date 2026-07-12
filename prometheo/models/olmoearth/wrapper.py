@@ -308,6 +308,19 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 raise ValueError("num_outputs requires the OlmoEarth encoder to expose embedding_size")
             self.head = _FinetuningHead(int(hidden_size), num_outputs)
 
+    @property
+    def encoder(self):
+        """Expose the underlying OlmoEarth encoder.
+
+        Mirrors ``PretrainedPrestoWrapper.encoder`` so downstream code that
+        duck-types on ``backbone.encoder`` (e.g. ``WorldCerealSeasonalModel``,
+        ``param_groups_lrd``'s ``model.encoder.blocks``) works with either
+        backbone. Without this, ``backbone.encoder`` raises AttributeError —
+        nn.Module only resolves registered submodules, and the OlmoEarth model
+        is registered as ``self.model``.
+        """
+        return self.model.encoder
+
     def forward(
         self,
         x: Predictors,
