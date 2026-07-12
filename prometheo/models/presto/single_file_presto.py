@@ -868,7 +868,7 @@ class PrestoFineTuningModel(nn.Module):
                 latlons=latlons,
                 mask=mask,
                 month=month,
-                eval_task=True,
+                eval_pooling="global",
             )
         )
 
