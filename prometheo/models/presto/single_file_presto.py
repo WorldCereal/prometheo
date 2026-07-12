@@ -618,12 +618,16 @@ class Encoder(nn.Module):
                 # zero embedding rather than NaN (0/0).
                 valid_count = torch.clamp(raw_valid_count, min=1.0)
                 x_mean = x_for_mean.sum(dim=2) / valid_count
-                # stops grad from flowing for those masked positions while
-                # leaving real timesteps completely unchanged. correcting the  
-                # LayerNorm bias (beta) term
-                fully_masked = (raw_valid_count == 0).expand_as(x_mean)
-                x_mean = torch.where(fully_masked, torch.zeros_like(x_mean), x_mean)
-                return self.norm(x_mean)
+                normed = self.norm(x_mean)
+                # A fully-masked timestep has x_mean == 0, and LayerNorm(0)
+                # outputs exactly the learned bias (beta). Zeroing must happen
+                # AFTER the norm: (a) downstream consumers see a constant zero
+                # embedding instead of beta for positions that carry no data,
+                # and (b) no gradient can flow into beta from those positions
+                # (zeroing before the norm leaves d(out)/d(beta) = 1 intact).
+                fully_masked = (raw_valid_count == 0).expand_as(normed)
+                normed = torch.where(fully_masked, torch.zeros_like(normed), normed)
+                return normed
 
         return self.norm(x), orig_indices, upd_mask
 
