@@ -1,7 +1,8 @@
+import math
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Union
+from typing import List, Optional, Sized, Union, cast
 
 import torch
 from loguru import logger
@@ -20,6 +21,155 @@ class Hyperparams:
     batch_size: int = 256
     patience: int = 20
     num_workers: int = 8
+
+
+def param_groups_weight_decay(
+    model: torch.nn.Module, weight_decay=1e-5, no_weight_decay_list=()
+):
+    # https://github.com/huggingface/pytorch-image-models/blob/main/timm/optim/optim_factory.py
+    no_weight_decay_list = set(no_weight_decay_list)
+    decay = []
+    no_decay = []
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        if param.ndim <= 1 or name.endswith(".bias") or name in no_weight_decay_list:
+            no_decay.append(param)
+        else:
+            decay.append(param)
+
+    return [
+        {"params": no_decay, "weight_decay": 0.0},
+        {"params": decay, "weight_decay": weight_decay},
+    ]
+
+
+def adjust_learning_rate(optimizer, epoch, warmup_epochs, total_epochs, max_lr, min_lr):
+    """Decay the learning rate with half-cycle cosine after warmup"""
+    if epoch < warmup_epochs:
+        lr = max_lr * epoch / warmup_epochs
+    else:
+        lr = min_lr + (max_lr - min_lr) * 0.5 * (
+            1.0
+            + math.cos(
+                math.pi * (epoch - warmup_epochs) / (total_epochs - warmup_epochs)
+            )
+        )
+    for param_group in optimizer.param_groups:
+        if "lr_scale" in param_group:
+            # This is only used during finetuning, and not yet
+            # implemented in our codebase
+            param_group["lr"] = lr * param_group["lr_scale"]
+        else:
+            param_group["lr"] = lr
+    return lr
+
+
+def param_groups_lrd(
+    model: torch.nn.Module,
+    weight_decay=0.05,
+    no_weight_decay_list=[],
+    layer_decay=0.75,
+    base_lr: float | None = None,
+):
+    """
+    Parameter groups for layer-wise lr decay
+    Following BEiT: https://github.com/microsoft/unilm/blob/7067d6b4ec0b44fd38e29ab3658765abcd9c7441/beit/optim_factory.py#L58
+    """
+    param_group_names = {}
+    param_groups = {}
+
+    num_layers = len(cast(Sized, model.encoder.blocks)) + 1
+
+    layer_scales = list(layer_decay ** (num_layers - i) for i in range(num_layers + 1))
+
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+
+        # no decay: all 1D parameters and model specific ones
+        if p.ndim == 1 or n in no_weight_decay_list:
+            g_decay = "no_decay"
+            this_decay = 0.0
+        else:
+            g_decay = "decay"
+            this_decay = weight_decay
+
+        layer_id = get_layer_id_for_rest_finetuning(n, num_layers, model=model)
+        group_name = "layer_%d_%s" % (layer_id, g_decay)
+
+        if group_name not in param_group_names:
+            this_scale = layer_scales[layer_id]
+
+            group_entry: dict = {
+                "lr_scale": this_scale,
+                "weight_decay": this_decay,
+                "params": [],
+            }
+            if base_lr is not None:
+                group_entry["lr"] = base_lr * this_scale
+
+            param_group_names[group_name] = {**group_entry, "params": []}
+            param_groups[group_name] = group_entry
+
+        param_group_names[group_name]["params"].append(n)
+        param_groups[group_name]["params"].append(p)
+
+    return list(param_groups.values())
+
+
+def _encoder_prefix(model: torch.nn.Module) -> str | None:
+    """Qualified name of ``model.encoder`` within ``model``'s module tree.
+
+    E.g. ``"encoder"`` for a bare Presto/OlmoEarth wrapper, or
+    ``"backbone.encoder"`` when the wrapper is nested inside another module
+    (WorldCerealSeasonalModel). None if the model exposes no ``encoder``.
+    """
+    encoder = getattr(model, "encoder", None)
+    if encoder is None:
+        return None
+    for module_name, module in model.named_modules():
+        if module is encoder:
+            return module_name
+    return None
+
+
+def get_layer_id_for_rest_finetuning(name, num_layers, model=None):
+    """
+    Assign a parameter with its layer id
+    Following BEiT: https://github.com/microsoft/unilm/blob/7067d6b4ec0b44fd38e29ab3658765abcd9c7441/beit/optim_factory.py#L33
+
+    Works for any backbone exposing ``model.encoder`` with a ``blocks``
+    ModuleList (Presto, OlmoEarth), at any wrapping depth. Within the
+    encoder, input-side parameters (anything with ``embed`` in its name,
+    plus OlmoEarth's ``composite_encodings``) map to layer 0 and
+    ``blocks.i`` to layer ``i + 1``; everything else — the final norm,
+    output-side projections, heads, and parameters outside the encoder —
+    maps to ``num_layers``.
+
+    Pass ``model`` to scope matching to its actual ``encoder`` submodule;
+    without it, the encoder subtree is located by the ``encoder`` path
+    component in the parameter name.
+    """
+    if model is not None:
+        prefix = _encoder_prefix(model)
+        if prefix is None or not name.startswith(prefix + "."):
+            return num_layers
+        rest = name[len(prefix) + 1 :].split(".")
+    else:
+        parts = name.split(".")
+        if "encoder" not in parts:
+            return num_layers
+        rest = parts[parts.index("encoder") + 1 :]
+    if any("embed" in part for part in rest) or "composite_encodings" in rest:
+        return 0
+    if len(rest) >= 2 and rest[0] == "blocks":
+        try:
+            return int(rest[1]) + 1
+        except ValueError:
+            pass
+    return num_layers
 
 
 def _train_loop(

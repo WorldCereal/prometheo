@@ -9,9 +9,8 @@ from torch.utils.data import DataLoader
 
 from prometheo import finetune
 from prometheo.datasets import WorldCerealLabelledDataset
-from prometheo.finetune import Hyperparams
+from prometheo.finetune import Hyperparams, param_groups_lrd
 from prometheo.models import Presto
-from prometheo.models.presto import param_groups_lrd
 
 
 class TestFinetuning(TestCase):
