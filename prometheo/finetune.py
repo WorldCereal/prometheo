@@ -96,7 +96,7 @@ def param_groups_lrd(
             g_decay = "decay"
             this_decay = weight_decay
 
-        layer_id = get_layer_id_for_rest_finetuning(n, num_layers, model=model)
+        layer_id = get_layer_id_for_finetuning(n, num_layers, model=model)
         group_name = "layer_%d_%s" % (layer_id, g_decay)
 
         if group_name not in param_group_names:
@@ -135,7 +135,7 @@ def _encoder_prefix(model: torch.nn.Module) -> str | None:
     return None
 
 
-def get_layer_id_for_rest_finetuning(name, num_layers, model=None):
+def get_layer_id_for_finetuning(name, num_layers, model=None):
     """
     Assign a parameter with its layer id
     Following BEiT: https://github.com/microsoft/unilm/blob/7067d6b4ec0b44fd38e29ab3658765abcd9c7441/beit/optim_factory.py#L33
