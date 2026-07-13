@@ -52,6 +52,7 @@ def param_groups_lrd(
     weight_decay=0.05,
     no_weight_decay_list=[],
     layer_decay=0.75,
+    base_lr: float | None = None,
 ):
     """
     Parameter groups for layer-wise lr decay
@@ -82,16 +83,16 @@ def param_groups_lrd(
         if group_name not in param_group_names:
             this_scale = layer_scales[layer_id]
 
-            param_group_names[group_name] = {
+            group_entry: dict = {
                 "lr_scale": this_scale,
                 "weight_decay": this_decay,
                 "params": [],
             }
-            param_groups[group_name] = {
-                "lr_scale": this_scale,
-                "weight_decay": this_decay,
-                "params": [],
-            }
+            if base_lr is not None:
+                group_entry["lr"] = base_lr * this_scale
+
+            param_group_names[group_name] = {**group_entry, "params": []}
+            param_groups[group_name] = group_entry
 
         param_group_names[group_name]["params"].append(n)
         param_groups[group_name]["params"].append(p)
@@ -106,7 +107,14 @@ def get_layer_id_for_rest_finetuning(name, num_layers):
     """
     if "embed" in name:
         return 0
-    elif name.startswith("encoder.blocks"):
-        return int(name.split(".")[2]) + 1
-    else:
-        return num_layers
+    # Match encoder.blocks at any path depth, e.g. "encoder.blocks.0.xxx" or
+    # "backbone.encoder.blocks.0.xxx" (WorldCerealSeasonalModel wrapping).
+    parts = name.split(".")
+    for i, part in enumerate(parts):
+        if part == "blocks" and i >= 1 and parts[i - 1] == "encoder":
+            try:
+                return int(parts[i + 1]) + 1
+            except (IndexError, ValueError):
+                pass
+    return num_layers
+ 
