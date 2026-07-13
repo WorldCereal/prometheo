@@ -634,11 +634,7 @@ def _predictor_from_xarray(arr: xr.DataArray, epsg: int) -> Predictors:
                 values, "t x y -> 1 y x t"
             )  # TODO check if this is correct
         elif band in S1_BANDS:
-            # convert to dB, the conversion to db is done here already
-            # >0 is to prevent log10(0) which would result in -inf
-            # all DN values are >0, so this is a sanity check
-            # all rescale_s1_backscatter in worldcereal need to be edited,
-            # as they do double rescaling of >0 db values, which is not correct
+            # convert to dB
             idx_valid = idx_valid & (values > 0)
             values[idx_valid] = 20 * np.log10(values[idx_valid]) - 83
             s1[..., S1_BANDS.index(band)] = rearrange(values, "t x y -> 1 y x t")
