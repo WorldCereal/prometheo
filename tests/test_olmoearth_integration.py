@@ -101,7 +101,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
         x = Predictors(s2=s2, s1=s1, timestamps=timestamps)
 
         # eval() disables band dropout so both paths are deterministic; both share
-        # the same underlying (randomly initialised) weights via wrapper.model.
+        # the same underlying (randomly initialised) weights via wrapper.
         wrapper = OlmoEarth(load_weights=False, patch_size=8)
         wrapper.eval()
 
@@ -110,8 +110,8 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
             wrapper_out = wrapper(x, eval_pooling=PoolingMethods.TIME)
 
         # --- reference path: build the canonical sample with the raw API ---
-        model = wrapper.model
-        tokenization_config = model.encoder.tokenization_config
+        encoder = wrapper.encoder
+        tokenization_config = encoder.tokenization_config
         normalizer = Normalizer(std_multiplier=2.0)
 
         s2_ref = s2[..., [S2_BANDS.index(p) for _, p in S2_OLMOEARTH_TO_PROMETHEO]]
@@ -142,7 +142,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
         )
 
         with torch.no_grad():
-            reference_encoder_output = model.encoder(
+            reference_encoder_output = encoder(
                 reference_sample,
                 patch_size=wrapper.patch_size,
                 input_res=wrapper.input_res,
@@ -186,7 +186,7 @@ class TestRealOlmoEarthIntegration(unittest.TestCase):
     def test_fast_pass_auto_selected_from_missing_tokens(self):
         # fast_pass=True only when every token is present, else False.
         wrapper = OlmoEarth(load_weights=False, patch_size=8)
-        tokenization_config = wrapper.model.encoder.tokenization_config
+        tokenization_config = wrapper.encoder.tokenization_config
 
         b, h, w, t = 1, 16, 16, 2
         timestamps = repeat(
