@@ -296,30 +296,18 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         """
         super().__init__()
         load_model_from_id = _olmoearth().load_model_from_id
-        self.model = load_model_from_id(_get_model_id(model_id), load_weights=load_weights)
+        model = load_model_from_id(_get_model_id(model_id), load_weights=load_weights)
+        self.encoder = model.encoder
         self.patch_size = patch_size
         self.input_res = input_res
         self.fast_pass = fast_pass
         self.replace_b1_b9_b8a = replace_b1_b9_b8a
         self.head: Optional[nn.Module] = None
         if num_outputs is not None:
-            hidden_size = getattr(getattr(self.model, "encoder", self.model), "embedding_size", None)
+            hidden_size = getattr(self.encoder, "embedding_size", None)
             if hidden_size is None:
                 raise ValueError("num_outputs requires the OlmoEarth encoder to expose embedding_size")
             self.head = _FinetuningHead(int(hidden_size), num_outputs)
-
-    @property
-    def encoder(self):
-        """Expose the underlying OlmoEarth encoder.
-
-        Mirrors ``PretrainedPrestoWrapper.encoder`` so downstream code that
-        duck-types on ``backbone.encoder`` (e.g. ``WorldCerealSeasonalModel``,
-        ``param_groups_lrd``'s ``model.encoder.blocks``) works with either
-        backbone. Without this, ``backbone.encoder`` raises AttributeError —
-        nn.Module only resolves registered submodules, and the OlmoEarth model
-        is registered as ``self.model``.
-        """
-        return self.model.encoder
 
     def forward(
         self,
@@ -336,14 +324,14 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 eval_pooling = PoolingMethods.GLOBAL
 
         model_device = next(self.parameters(), torch.empty(0, device=device)).device
-        tokenization_config = getattr(self.model.encoder, "tokenization_config", None)
+        tokenization_config = getattr(self.encoder, "tokenization_config", None)
         sample = dataset_to_olmoearth_sample(
             x,
             model_device=model_device,
             tokenization_config=tokenization_config,
             replace_b1_b9_b8a=self.replace_b1_b9_b8a,
         )
-        encoder_output = self.model.encoder(
+        encoder_output = self.encoder(
             sample,
             patch_size=self.patch_size,
             input_res=self.input_res,
