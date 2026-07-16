@@ -280,7 +280,9 @@ def month_to_tensor(
     if isinstance(month, int):
         assert cast(int, month) < 12
     else:
-        assert max(cast(torch.Tensor, month.flatten())) < 12
+        # Single tensor reduction — python max() would iterate the tensor
+        # element-wise (one device op per element on CUDA inputs).
+        assert int(cast(torch.Tensor, month).max()) < 12
 
     if isinstance(month, int):
         # >>> torch.fmod(torch.tensor([9., 10, 11, 12, 13, 14]), 12)
