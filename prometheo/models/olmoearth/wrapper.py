@@ -5,9 +5,12 @@ from functools import lru_cache
 from types import SimpleNamespace
 from typing import Optional, Union
 
+from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
+import requests
+import io
 
 from prometheo.models.pooling import PoolingMethods
 from prometheo.predictors import (
@@ -72,7 +75,8 @@ def _olmoearth() -> SimpleNamespace:
             Modality,
         )
         from olmoearth_pretrain_minimal.olmoearth_pretrain_v1.utils.datatypes import (
-            MaskedOlmoEarthSample, MaskValue
+            MaskedOlmoEarthSample,
+            MaskValue,
         )
     except ImportError as exc:
         raise _missing_dependency_error() from exc
@@ -150,6 +154,50 @@ def _b1_b9_share_bandset_with_other_bands(tokenization_config) -> bool:
     )
 
 
+@lru_cache(maxsize=6)
+def load_olmoearth_weights(
+    olmoearth_model: nn.Module,
+    weights_path: Union[str, Path],
+    strict: bool = True,
+) -> nn.Module:
+    """Load pretrained weights into an OlmoEarth model.
+
+    Parameters
+    ----------
+    olmoearth_model : nn.Module
+        The OlmoEarth model to load the pretrained weights into.
+    weights_path : Union[str, Path], optional
+        The path to the pretrained weights file. If not provided, the default model path will be used.
+    strict : bool, optional
+        Whether to strictly enforce that the keys in the pretrained weights match the keys in the model.
+        If True, an error will be raised if there are any missing or unexpected keys. If False, missing or
+        unexpected keys will be ignored. Default is True.
+
+    Returns
+    -------
+    nn.Module
+        The Presto model with the pretrained weights loaded.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the specified model path does not exist.
+    """
+    olmoearth_model.to(device)
+    if isinstance(weights_path, str) and (weights_path.startswith("http")):
+        response = requests.get(weights_path)
+        olmoearth_model_layers = torch.load(
+            io.BytesIO(response.content), map_location=device
+        )
+        olmoearth_model.load_state_dict(olmoearth_model_layers, strict=strict)
+    else:
+        olmoearth_model.load_state_dict(
+            torch.load(weights_path, map_location=device), strict=strict
+        )
+
+    return olmoearth_model
+
+
 def dataset_to_olmoearth_sample(
     x: Predictors,
     model_device: torch.device = device,
@@ -196,7 +244,9 @@ def dataset_to_olmoearth_sample(
         tokenization_config = oe.TokenizationConfig()
 
     sample_kwargs = {
-        "timestamps": to_torchtensor(np.array(x.timestamps, copy=True), model_device).long()
+        "timestamps": to_torchtensor(
+            np.array(x.timestamps, copy=True), model_device
+        ).long()
     }
     # PromethEO timestamps are [day, month, year] with 1-indexed months; upstream
     # OlmoEarth examples expect the month column to be zero-indexed.
@@ -204,7 +254,9 @@ def dataset_to_olmoearth_sample(
 
     # At least one of Sentinel-2 / Sentinel-1 is present (guarded above); both optional.
     if x.s2 is not None:
-        s2_indices = [S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO]
+        s2_indices = [
+            S2_BANDS.index(prometheo) for _, prometheo in S2_OLMOEARTH_TO_PROMETHEO
+        ]
         s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
         # Data-quality workarounds for consistently-missing bands that share a
         # band set with present bands (a missing band marks its whole band set
@@ -223,7 +275,9 @@ def dataset_to_olmoearth_sample(
         oe_s2_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
         for target, source in substitutions:
             s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
-        s2_mask = _make_modality_mask(s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config)
+        s2_mask = _make_modality_mask(
+            s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config
+        )
         s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
         for target, source in substitutions:
             # The requirement is to normalize substituted values with the
@@ -232,10 +286,14 @@ def dataset_to_olmoearth_sample(
             # source column.
             s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
         sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
-        sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(s2_mask, model_device).long()
+        sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(
+            s2_mask, model_device
+        ).long()
 
     if x.s1 is not None:
-        s1_indices = [S1_BANDS.index(prometheo) for _, prometheo in S1_OLMOEARTH_TO_PROMETHEO]
+        s1_indices = [
+            S1_BANDS.index(prometheo) for _, prometheo in S1_OLMOEARTH_TO_PROMETHEO
+        ]
         s1 = np.asarray(x.s1)[..., s1_indices].astype(np.float32)
         s1_mask = _make_modality_mask(
             s1, oe.Modality.SENTINEL1.name, tokenization_config
@@ -306,7 +364,9 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         if num_outputs is not None:
             hidden_size = getattr(self.encoder, "embedding_size", None)
             if hidden_size is None:
-                raise ValueError("num_outputs requires the OlmoEarth encoder to expose embedding_size")
+                raise ValueError(
+                    "num_outputs requires the OlmoEarth encoder to expose embedding_size"
+                )
             self.head = _FinetuningHead(int(hidden_size), num_outputs)
 
     def forward(
@@ -385,23 +445,35 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 mask = getattr(tokens_and_masks, f"{modality_name}_mask")
                 valid = (mask == online).to(tokens.dtype)
                 count = valid.sum(dim=4)
-                emb = (tokens * valid.unsqueeze(-1)).sum(dim=4) / count.clamp(min=1.0).unsqueeze(-1)
+                emb = (tokens * valid.unsqueeze(-1)).sum(dim=4) / count.clamp(
+                    min=1.0
+                ).unsqueeze(-1)
                 modality_embeddings.append(emb)
                 modality_validities.append((count > 0).to(tokens.dtype))
             if modality_embeddings:
-                emb_stack = torch.stack(modality_embeddings, dim=0)   # [M, B, ph, pw, T, D]
-                valid_stack = torch.stack(modality_validities, dim=0)  # [M, B, ph, pw, T]
-                count = valid_stack.sum(dim=0)                        # [B, ph, pw, T]
-                combined = (emb_stack * valid_stack.unsqueeze(-1)).sum(dim=0) / count.clamp(min=1.0).unsqueeze(-1)
+                emb_stack = torch.stack(
+                    modality_embeddings, dim=0
+                )  # [M, B, ph, pw, T, D]
+                valid_stack = torch.stack(
+                    modality_validities, dim=0
+                )  # [M, B, ph, pw, T]
+                count = valid_stack.sum(dim=0)  # [B, ph, pw, T]
+                combined = (emb_stack * valid_stack.unsqueeze(-1)).sum(
+                    dim=0
+                ) / count.clamp(min=1.0).unsqueeze(-1)
                 combined_valid = (count > 0).to(emb_stack.dtype)
                 return combined, combined_valid
-            raise ValueError("OlmoEarth encoder output did not include supported S1/S2 tokens")
+            raise ValueError(
+                "OlmoEarth encoder output did not include supported S1/S2 tokens"
+            )
         raise ValueError(
             f"Unexpected OlmoEarth encoder output type {type(encoder_output).__name__}; "
             "expected a dict with a 'tokens_and_masks' entry"
         )
 
-    def _apply_pooling(self, embeddings: torch.Tensor, validity: torch.Tensor, eval_pooling):
+    def _apply_pooling(
+        self, embeddings: torch.Tensor, validity: torch.Tensor, eval_pooling
+    ):
         if eval_pooling is None:
             return embeddings
         if embeddings.ndim == 5:
