@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import warnings
+from enum import Enum
 from functools import lru_cache
 from types import SimpleNamespace
 from typing import Optional, Union
@@ -43,6 +44,43 @@ S1_OLMOEARTH_TO_PROMETHEO = [("vv", "VV"), ("vh", "VH")]
 # (its true neighbour B8A is itself missing in the data).
 S2_B8A_SUBSTITUTE = ("B8A", "B08")
 S2_B1_B9_SUBSTITUTES = [("B01", "B02"), ("B09", "B08")]
+
+
+class MissingBandStrategy(str, Enum):
+    """How to fill the consistently-missing Sentinel-2 bands (B8A, B01, B09).
+
+    INTERPOLATE: fill each missing band from its spectrally-nearest present
+        band (normalized with the source band's stats).
+    ZERO: feed the encoder zeros for the missing bands (zero in normalized
+        space, i.e. the value the model sees is 0.0).
+
+    Either strategy stops the missing bands from marking their band set
+    MISSING; see ``dataset_to_olmoearth_sample``.
+    """
+
+    INTERPOLATE = "interpolate"
+    ZERO = "zero"
+
+
+def _resolve_missing_band_strategy(
+    value: Union[MissingBandStrategy, str, bool, None],
+) -> Optional[MissingBandStrategy]:
+    """Normalize ``replace_b1_b9_b8a`` to a strategy (or None for off).
+
+    Booleans are the parameter's legacy form: True maps to INTERPOLATE (the
+    original behaviour) with a deprecation warning, False to off.
+    """
+    if value is None or value is False:
+        return None
+    if value is True:
+        warnings.warn(
+            "replace_b1_b9_b8a=True is deprecated; pass "
+            "MissingBandStrategy.INTERPOLATE (or 'interpolate') instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        return MissingBandStrategy.INTERPOLATE
+    return MissingBandStrategy(value)
 
 
 def _missing_dependency_error() -> ImportError:
@@ -202,7 +240,7 @@ def dataset_to_olmoearth_sample(
     x: Predictors,
     model_device: torch.device = device,
     tokenization_config=None,
-    replace_b1_b9_b8a: bool = False,
+    replace_b1_b9_b8a: Union[MissingBandStrategy, str, bool, None] = None,
 ):
     """Convert PromethEO predictors into an OlmoEarth masked sample.
 
@@ -221,13 +259,17 @@ def dataset_to_olmoearth_sample(
             is used.
         replace_b1_b9_b8a: Work around a data issue where the Sentinel-2 bands
             B8A, B01 and B09 are consistently missing. A missing band marks its
-            whole band set MISSING and drops it from the encoder, so when
-            ``True`` the missing bands are filled from spectrally-adjacent
-            present bands (each normalized with the source band's stats):
-            B8A from B08, and — only when the model tokenizes B01/B09 together
-            with other bands (v1.1/v1.2) — B01 from B02 and B09 from B08. Under
-            v1 tokenization B01/B09 form their own band set, so they are left
-            masked MISSING and simply dropped by the encoder.
+            whole band set MISSING and drops it from the encoder, so a
+            ``MissingBandStrategy`` (or its string value) fills the missing
+            bands instead: ``INTERPOLATE`` copies each from a
+            spectrally-adjacent present band (normalized with the source
+            band's stats) — B8A from B08, B01 from B02, B09 from B08 — while
+            ``ZERO`` feeds the encoder zeros for them. B01/B09 are only filled
+            when the model tokenizes them together with other bands
+            (v1.1/v1.2); under v1 tokenization they form their own band set,
+            so they are left masked MISSING and simply dropped by the encoder.
+            ``None`` (the default) applies no workaround; the legacy ``True``
+            is a deprecated alias for ``INTERPOLATE``.
     """
 
     if x.timestamps is None:
@@ -238,6 +280,7 @@ def dataset_to_olmoearth_sample(
             "Sentinel-1 (Predictors.s1)"
         )
 
+    missing_band_strategy = _resolve_missing_band_strategy(replace_b1_b9_b8a)
     oe = _olmoearth()
     normalizer = oe.Normalizer(std_multiplier=2.0)
     if tokenization_config is None:
@@ -260,31 +303,42 @@ def dataset_to_olmoearth_sample(
         s2 = np.asarray(x.s2)[..., s2_indices].astype(np.float32)
         # Data-quality workarounds for consistently-missing bands that share a
         # band set with present bands (a missing band marks its whole band set
-        # MISSING and drops it from the encoder). Copying the *raw* source
-        # values into the target slot before the mask is built lets that band
-        # set be treated as present wherever the source is (and still MISSING
-        # if the source or the band set's other bands are gone). B01/B09 are
-        # only substituted when the tokenization groups them with other bands
-        # (v1.1/v1.2); under v1 they form their own band set, which is simply
-        # masked MISSING and dropped.
+        # MISSING and drops it from the encoder). Overwriting the target slot
+        # *before* the mask is built stops it from marking its band set
+        # MISSING: INTERPOLATE copies the raw source values, so the band set
+        # is treated as present wherever the source is (and still MISSING if
+        # the source or the band set's other bands are gone); ZERO writes a
+        # raw placeholder, so the target never affects the mask at all.
+        # B01/B09 are only substituted when the tokenization groups them with
+        # other bands (v1.1/v1.2); under v1 they form their own band set,
+        # which is simply masked MISSING and dropped.
         substitutions = []
-        if replace_b1_b9_b8a:
+        if missing_band_strategy is not None:
             substitutions.append(S2_B8A_SUBSTITUTE)
             if _b1_b9_share_bandset_with_other_bands(tokenization_config):
                 substitutions.extend(S2_B1_B9_SUBSTITUTES)
         oe_s2_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
         for target, source in substitutions:
-            s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
+            if missing_band_strategy is MissingBandStrategy.INTERPOLATE:
+                s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
+            else:  # ZERO
+                s2[..., oe_s2_bands.index(target)] = 0.0
         s2_mask = _make_modality_mask(
             s2, oe.Modality.SENTINEL2_L2A.name, tokenization_config
         )
         s2 = normalizer.normalize(oe.Modality.SENTINEL2_L2A, s2)
         for target, source in substitutions:
-            # The requirement is to normalize substituted values with the
-            # *source* band's stats. ``normalize`` used the target's stats for
-            # the target slot, so overwrite it with the already-normalized
-            # source column.
-            s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
+            if missing_band_strategy is MissingBandStrategy.INTERPOLATE:
+                # The requirement is to normalize substituted values with the
+                # *source* band's stats. ``normalize`` used the target's stats
+                # for the target slot, so overwrite it with the
+                # already-normalized source column.
+                s2[..., oe_s2_bands.index(target)] = s2[..., oe_s2_bands.index(source)]
+            else:
+                # ZERO means the *encoder* sees zeros, so the zero goes in
+                # after normalization (a raw 0 would normalize to a nonzero
+                # value).
+                s2[..., oe_s2_bands.index(target)] = 0.0
         sample_kwargs["sentinel2_l2a"] = to_torchtensor(s2, model_device).float()
         sample_kwargs["sentinel2_l2a_mask"] = to_torchtensor(
             s2_mask, model_device
@@ -332,7 +386,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         patch_size: int = 1,
         input_res: int = 10,
         fast_pass: Optional[bool] = None,
-        replace_b1_b9_b8a: bool = False,
+        replace_b1_b9_b8a: Union[MissingBandStrategy, str, bool, None] = None,
     ):
         """
         Args:
@@ -343,14 +397,19 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 when nothing is masked, masked path otherwise. Pass a bool to
                 force it.
             replace_b1_b9_b8a: Work around a data issue where the Sentinel-2
-                bands B8A, B01 and B09 are consistently missing. When ``True``,
-                B8A is filled with the (present) B8 band, and — for models that
-                tokenize B01/B09 together with the other S2 bands (v1.1/v1.2) —
-                B01 with B02 and B09 with B08 (each normalized with the source
-                band's stats), so the missing bands don't mark their band set
-                MISSING. For models that give B01/B09 their own band set (v1),
-                that band set is left masked MISSING and dropped by the
-                encoder. See ``dataset_to_olmoearth_sample``.
+                bands B8A, B01 and B09 are consistently missing. Pass a
+                ``MissingBandStrategy`` (or its string value):
+                ``INTERPOLATE`` fills B8A with the (present) B8 band, and —
+                for models that tokenize B01/B09 together with the other S2
+                bands (v1.1/v1.2) — B01 with B02 and B09 with B08 (each
+                normalized with the source band's stats); ``ZERO`` feeds the
+                encoder zeros for those bands instead. Either way the missing
+                bands no longer mark their band set MISSING. For models that
+                give B01/B09 their own band set (v1), that band set is left
+                masked MISSING and dropped by the encoder. ``None`` (the
+                default) applies no workaround; the legacy ``True`` is a
+                deprecated alias for ``INTERPOLATE``. See
+                ``dataset_to_olmoearth_sample``.
         """
         super().__init__()
         load_model_from_id = _olmoearth().load_model_from_id
@@ -359,7 +418,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         self.patch_size = patch_size
         self.input_res = input_res
         self.fast_pass = fast_pass
-        self.replace_b1_b9_b8a = replace_b1_b9_b8a
+        self.replace_b1_b9_b8a = _resolve_missing_band_strategy(replace_b1_b9_b8a)
         self.head: Optional[nn.Module] = None
         if num_outputs is not None:
             hidden_size = getattr(self.encoder, "embedding_size", None)

@@ -6,6 +6,7 @@ import torch
 from einops import repeat
 
 from prometheo.models.olmoearth.wrapper import (
+    MissingBandStrategy,
     PretrainedOlmoEarthWrapper,
     S2_OLMOEARTH_TO_PROMETHEO,
     dataset_to_olmoearth_sample,
@@ -136,13 +137,57 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         # With the workaround: band set 1 is present (0) and the B8A slot equals
         # the B8-normalized B08 slot rather than a normalized NODATAVALUE.
         fixed = dataset_to_olmoearth_sample(
-            x, model_device=torch.device("cpu"), replace_b1_b9_b8a=True
+            x,
+            model_device=torch.device("cpu"),
+            replace_b1_b9_b8a=MissingBandStrategy.INTERPOLATE,
         )
         self.assertEqual(fixed.sentinel2_l2a_mask[0, 0, 0, 0, 1].item(), 0)
         self.assertTrue(
             torch.allclose(
                 fixed.sentinel2_l2a[..., b8a_idx], fixed.sentinel2_l2a[..., b8_idx]
             )
+        )
+
+    def test_zero_strategy_fills_b8a_with_zeros_and_unmasks(self):
+        # The 'zero' strategy also unmasks B8A's band set, but the encoder sees
+        # zeros in the B8A slot rather than interpolated B08 values.
+        b, h, w, t = 1, 1, 1, 1
+        s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
+        s2[:, :, :, :, S2_BANDS.index("B8A")] = NODATAVALUE
+        x = Predictors(s2=s2, timestamps=np.array([[[1, 1, 2024]]]))
+
+        oe_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
+        sample = dataset_to_olmoearth_sample(
+            x, model_device=torch.device("cpu"), replace_b1_b9_b8a="zero"
+        )
+
+        self.assertEqual(sample.sentinel2_l2a_mask[0, 0, 0, 0, 1].item(), 0)
+        # Zero in *normalized* space — the value the encoder actually sees.
+        self.assertTrue(
+            torch.equal(
+                sample.sentinel2_l2a[..., oe_bands.index("B8A")],
+                torch.zeros_like(sample.sentinel2_l2a[..., 0]),
+            )
+        )
+
+    def test_bool_true_is_deprecated_alias_for_interpolate(self):
+        b, h, w, t = 1, 1, 1, 1
+        s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
+        s2[:, :, :, :, S2_BANDS.index("B8A")] = NODATAVALUE
+        x = Predictors(s2=s2, timestamps=np.array([[[1, 1, 2024]]]))
+
+        with self.assertWarns(DeprecationWarning):
+            legacy = dataset_to_olmoearth_sample(
+                x, model_device=torch.device("cpu"), replace_b1_b9_b8a=True
+            )
+        enum = dataset_to_olmoearth_sample(
+            x,
+            model_device=torch.device("cpu"),
+            replace_b1_b9_b8a=MissingBandStrategy.INTERPOLATE,
+        )
+        self.assertTrue(torch.equal(legacy.sentinel2_l2a, enum.sentinel2_l2a))
+        self.assertTrue(
+            torch.equal(legacy.sentinel2_l2a_mask, enum.sentinel2_l2a_mask)
         )
 
     def test_replace_b1_b9_b8a_drops_b1_b9_under_v1_tokenization(self):
@@ -155,13 +200,17 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         s2[:, :, :, :, S2_BANDS.index("B9")] = NODATAVALUE
         x = Predictors(s2=s2, timestamps=np.array([[[1, 1, 2024]]]))
 
-        # The default tokenization is the v1 grouping.
-        sample = dataset_to_olmoearth_sample(
-            x, model_device=torch.device("cpu"), replace_b1_b9_b8a=True
-        )
+        # The default tokenization is the v1 grouping; neither strategy may
+        # fabricate values for a band set that can simply be dropped.
+        for strategy in MissingBandStrategy:
+            sample = dataset_to_olmoearth_sample(
+                x, model_device=torch.device("cpu"), replace_b1_b9_b8a=strategy
+            )
 
-        # Band sets 0 and 1 present, the atmospheric band set MISSING (3).
-        self.assertEqual(sample.sentinel2_l2a_mask[0, 0, 0, 0].tolist(), [0, 0, 3])
+            # Band sets 0 and 1 present, the atmospheric band set MISSING (3).
+            self.assertEqual(
+                sample.sentinel2_l2a_mask[0, 0, 0, 0].tolist(), [0, 0, 3]
+            )
 
     def test_replace_b1_b9_b8a_fills_b1_b9_under_v1_2_tokenization(self):
         from olmoearth_pretrain_minimal import ModelID, load_model_from_id
@@ -191,7 +240,7 @@ class TestOlmoEarthAdapter(unittest.TestCase):
             x,
             model_device=torch.device("cpu"),
             tokenization_config=tokenization_config,
-            replace_b1_b9_b8a=True,
+            replace_b1_b9_b8a="interpolate",
         )
         self.assertEqual(fixed.sentinel2_l2a_mask[0, 0, 0, 0, 0].item(), 0)
         oe_bands = [olmoearth for olmoearth, _ in S2_OLMOEARTH_TO_PROMETHEO]
@@ -208,6 +257,23 @@ class TestOlmoEarthAdapter(unittest.TestCase):
             )
         )
 
+        # The 'zero' strategy also keeps the band set present, but the missing
+        # bands (B8A, B01, B09) become zeros in normalized space.
+        zeroed = dataset_to_olmoearth_sample(
+            x,
+            model_device=torch.device("cpu"),
+            tokenization_config=tokenization_config,
+            replace_b1_b9_b8a=MissingBandStrategy.ZERO,
+        )
+        self.assertEqual(zeroed.sentinel2_l2a_mask[0, 0, 0, 0, 0].item(), 0)
+        for band in ["B8A", "B01", "B09"]:
+            self.assertTrue(
+                torch.equal(
+                    zeroed.sentinel2_l2a[..., oe_bands.index(band)],
+                    torch.zeros_like(zeroed.sentinel2_l2a[..., 0]),
+                )
+            )
+
     def test_wrapper_replace_b1_b9_b8a_forward_pass(self):
         # End to end: the default wrapper model is v1.2, whose single S2 band
         # set would go entirely MISSING without the workaround.
@@ -220,13 +286,16 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         s2[..., S2_BANDS.index("B9")] = NODATAVALUE
         x = Predictors(s2=s2, timestamps=timestamps)
 
-        model = PretrainedOlmoEarthWrapper(
-            load_weights=False, patch_size=8, replace_b1_b9_b8a=True
-        )
-        output = model(x, eval_pooling=PoolingMethods.GLOBAL)
+        for strategy in MissingBandStrategy:
+            model = PretrainedOlmoEarthWrapper(
+                load_weights=False, patch_size=8, replace_b1_b9_b8a=strategy
+            )
+            output = model(x, eval_pooling=PoolingMethods.GLOBAL)
 
-        self.assertEqual(output.shape[:4], (b, h // model.patch_size, w // model.patch_size, 1))
-        self.assertTrue(torch.isfinite(output).all())
+            self.assertEqual(
+                output.shape[:4], (b, h // model.patch_size, w // model.patch_size, 1)
+            )
+            self.assertTrue(torch.isfinite(output).all())
 
     def test_wrapper_global_pooling_collapses_time(self):
         # Spatial dims must be divisible by the patch size; a 16x16 input with
