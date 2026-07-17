@@ -309,11 +309,11 @@ def dataset_to_model(x: Predictors, device: Optional[torch.device] = None):
             np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
         )
 
-        latlon: Union[ArrayTensor, None] = None
+        latlon = None
         if x.latlon is not None:
             latlon = rearrange(x.latlon, "b h w d -> (b h w) d")
 
-        timestamps: Union[ArrayTensor, None] = None
+        timestamps = None
         if x.timestamps is not None:
             timestamps = repeat(x.timestamps, "b t d -> b h w t d", h=h, w=w)
             timestamps = rearrange(timestamps, "b h w t d -> (b h w) t d")
