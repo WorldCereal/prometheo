@@ -170,29 +170,6 @@ class TestOlmoEarthAdapter(unittest.TestCase):
             )
         )
 
-    def test_replace_b1_b9_b8a_is_deprecated_alias_for_replace_bands(self):
-        b, h, w, t = 1, 1, 1, 1
-        s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
-        s2[:, :, :, :, S2_BANDS.index("B8A")] = NODATAVALUE
-        x = Predictors(s2=s2, timestamps=np.array([[[1, 1, 2024]]]))
-
-        with self.assertWarns(DeprecationWarning):
-            legacy = dataset_to_olmoearth_sample(
-                x, model_device=torch.device("cpu"), replace_b1_b9_b8a=True
-            )
-        explicit = dataset_to_olmoearth_sample(
-            x,
-            model_device=torch.device("cpu"),
-            replace_bands={
-                band: MissingBandStrategy.INTERPOLATE
-                for band in ("B8A", "B01", "B09")
-            },
-        )
-        self.assertTrue(torch.equal(legacy.sentinel2_l2a, explicit.sentinel2_l2a))
-        self.assertTrue(
-            torch.equal(legacy.sentinel2_l2a_mask, explicit.sentinel2_l2a_mask)
-        )
-
     def test_replace_bands_rejects_bad_input(self):
         b, h, w, t = 1, 1, 1, 1
         s2 = np.ones((b, h, w, t, len(S2_BANDS)), dtype=np.float32)
@@ -204,11 +181,6 @@ class TestOlmoEarthAdapter(unittest.TestCase):
         # Unknown handling method.
         with self.assertRaises(ValueError):
             dataset_to_olmoearth_sample(x, replace_bands={"B8A": "nearest"})
-        # Old and new parameters together.
-        with self.assertRaises(ValueError):
-            dataset_to_olmoearth_sample(
-                x, replace_bands={"B8A": "zero"}, replace_b1_b9_b8a=True
-            )
 
     def test_replace_bands_drops_b1_b9_under_v1_tokenization(self):
         # OlmoEarth v1 gives B01/B09 their own band set (band set 2), so when

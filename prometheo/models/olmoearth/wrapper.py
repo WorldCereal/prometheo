@@ -55,9 +55,6 @@ S2_BAND_WAVELENGTHS_NM = {
     "B11": 1610,
     "B12": 2190,
 }
-# Bands the deprecated ``replace_b1_b9_b8a`` parameter applied to.
-_LEGACY_REPLACED_BANDS = ("B8A", "B01", "B09")
-
 
 class MissingBandStrategy(str, Enum):
     """How to fill a Sentinel-2 band's missing values so its band set stays
@@ -78,34 +75,12 @@ class MissingBandStrategy(str, Enum):
 
 def _resolve_band_replacements(
     replace_bands: Optional[Mapping[str, Union[MissingBandStrategy, str]]],
-    replace_b1_b9_b8a: Union[MissingBandStrategy, str, bool, None],
 ) -> dict[str, MissingBandStrategy]:
-    """Normalize the band-replacement inputs to ``{olmoearth band: strategy}``.
+    """Normalize ``replace_bands`` to ``{olmoearth band: strategy}``.
 
-    ``replace_bands`` keys may use either the OlmoEarth ("B01") or PromethEO
-    ("B1") band spelling. The deprecated ``replace_b1_b9_b8a`` (bool or
-    strategy; ``True`` means INTERPOLATE) maps to replacing B8A, B01 and B09
-    with that strategy.
+    Keys may use either the OlmoEarth ("B01") or PromethEO ("B1") band
+    spelling.
     """
-    if replace_b1_b9_b8a is not None and replace_b1_b9_b8a is not False:
-        if replace_bands is not None:
-            raise ValueError(
-                "Pass either replace_bands or the deprecated replace_b1_b9_b8a, "
-                "not both"
-            )
-        legacy_strategy = (
-            MissingBandStrategy.INTERPOLATE
-            if replace_b1_b9_b8a is True
-            else MissingBandStrategy(replace_b1_b9_b8a)
-        )
-        warnings.warn(
-            "replace_b1_b9_b8a is deprecated; pass replace_bands="
-            f"{{band: '{legacy_strategy.value}' for band in "
-            f"{_LEGACY_REPLACED_BANDS}}} instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        replace_bands = {band: legacy_strategy for band in _LEGACY_REPLACED_BANDS}
     if not replace_bands:
         return {}
     aliases = {}
@@ -301,7 +276,6 @@ def dataset_to_olmoearth_sample(
     model_device: torch.device = device,
     tokenization_config=None,
     replace_bands: Optional[Mapping[str, Union[MissingBandStrategy, str]]] = None,
-    replace_b1_b9_b8a: Union[MissingBandStrategy, str, bool, None] = None,
 ):
     """Convert PromethEO predictors into an OlmoEarth masked sample.
 
@@ -331,9 +305,6 @@ def dataset_to_olmoearth_sample(
             set consists entirely of replaced bands (e.g. B01/B09 under v1
             tokenization), it is left masked MISSING and simply dropped by
             the encoder. ``None`` (the default) applies no workaround.
-        replace_b1_b9_b8a: Deprecated alias for
-            ``replace_bands={band: strategy for band in ("B8A", "B01", "B09")}``;
-            the legacy ``True`` means ``INTERPOLATE``.
     """
 
     if x.timestamps is None:
@@ -344,7 +315,7 @@ def dataset_to_olmoearth_sample(
             "Sentinel-1 (Predictors.s1)"
         )
 
-    band_replacements = _resolve_band_replacements(replace_bands, replace_b1_b9_b8a)
+    band_replacements = _resolve_band_replacements(replace_bands)
     oe = _olmoearth()
     normalizer = oe.Normalizer(std_multiplier=2.0)
     if tokenization_config is None:
@@ -469,7 +440,6 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         input_res: int = 10,
         fast_pass: Optional[bool] = None,
         replace_bands: Optional[Mapping[str, Union[MissingBandStrategy, str]]] = None,
-        replace_b1_b9_b8a: Union[MissingBandStrategy, str, bool, None] = None,
     ):
         """
         Args:
@@ -492,8 +462,6 @@ class PretrainedOlmoEarthWrapper(nn.Module):
                 under v1 tokenization) are left masked MISSING and dropped by
                 the encoder instead. ``None`` (the default) applies no
                 workaround. See ``dataset_to_olmoearth_sample``.
-            replace_b1_b9_b8a: Deprecated alias for ``replace_bands`` covering
-                B8A, B01 and B09; the legacy ``True`` means ``INTERPOLATE``.
         """
         super().__init__()
         load_model_from_id = _olmoearth().load_model_from_id
@@ -502,9 +470,7 @@ class PretrainedOlmoEarthWrapper(nn.Module):
         self.patch_size = patch_size
         self.input_res = input_res
         self.fast_pass = fast_pass
-        self.replace_bands = _resolve_band_replacements(
-            replace_bands, replace_b1_b9_b8a
-        )
+        self.replace_bands = _resolve_band_replacements(replace_bands)
         self.head: Optional[nn.Module] = None
         if num_outputs is not None:
             hidden_size = getattr(self.encoder, "embedding_size", None)
