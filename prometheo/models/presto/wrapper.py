@@ -18,7 +18,6 @@ from prometheo.predictors import (
     S2_BANDS,
     ArrayTensor,
     Predictors,
-    to_torchtensor,
 )
 from prometheo.utils import device
 
@@ -149,9 +148,7 @@ def normalize(x: np.ndarray, mask: np.ndarray):
         BANDS.index("NDVI"),
     )
     if isinstance(x, np.ndarray):
-        ndvi_mask_from_input = np.logical_or(
-            mask[..., b4_idx], mask[..., b8_idx]
-        )
+        ndvi_mask_from_input = np.logical_or(mask[..., b4_idx], mask[..., b8_idx])
     else:
         ndvi_mask_from_input = torch.logical_or(
             mask[..., b4_idx].bool(), mask[..., b8_idx].bool()
@@ -166,7 +163,7 @@ def normalize(x: np.ndarray, mask: np.ndarray):
     return x, mask
 
 
-def dataset_to_model(x: Predictors):
+def dataset_to_model(x: Predictors, device: Optional[torch.device] = None):
     batch_sizes = [v.shape[0] for v in [x.s1, x.s2, x.meteo, x.dem] if v is not None]
     timesteps = [v.shape[-2] for v in [x.s1, x.s2, x.meteo] if v is not None]
     hs = [v.shape[1] for v in [x.s1, x.s2, x.dem, x.latlon] if v is not None]
@@ -189,58 +186,163 @@ def dataset_to_model(x: Predictors):
     batch_size, timesteps = batch_sizes[0], timesteps[0]
     total_bands = sum([len(v) for _, v in BANDS_GROUPS_IDX.items()])
 
-    mask, output = (
-        np.ones((batch_size, h, w, timesteps, total_bands)),
-        np.zeros((batch_size, h, w, timesteps, total_bands)),
-    )
+    if device is not None:
+        # Torch-native path: assemble and normalize on `device` in float32.
+        # This avoids a per-batch float64 CPU allocation and serialization with the GPU.
+        s1 = _to_device_tensor(x.s1, device) if x.s1 is not None else None
+        s2 = _to_device_tensor(x.s2, device) if x.s2 is not None else None
+        meteo = _to_device_tensor(x.meteo, device) if x.meteo is not None else None
+        dem = _to_device_tensor(x.dem, device) if x.dem is not None else None
 
-    if x.s1 is not None:
-        # for some reason, doing
-        # x.s1[ :, 0, 0, :, mapper["S1"]["predictor"]]
-        # directly yields an array of shape [bands, batch_size, timesteps]
-        # but splitting it like this doesn't. I am not sure why
-        s1_hw = x.s1[:, :, :, :, :]
-        s1_hw_bands = s1_hw[:, :, :, :, mapper["S1"]["predictor"]]
-        output[:, :, :, :, mapper["S1"]["presto"]] = s1_hw_bands
-        mask[:, :, :, :, mapper["S1"]["presto"]] = s1_hw_bands == NODATAVALUE
-
-    if x.s2 is not None:
-        s2_hw = x.s2[:, :, :, :, :]
-        s2_hw_bands = s2_hw[:, :, :, :, mapper["S2"]["predictor"]]
-        output[:, :, :, :, mapper["S2"]["presto"]] = s2_hw_bands
-        mask[:, :, :, :, mapper["S2"]["presto"]] = s2_hw_bands == NODATAVALUE
-
-    if x.dem is not None:
-        dem_with_time = repeat(
-            x.dem[:, :, :, mapper["dem"]["predictor"]],
-            "b h w d -> b h w t d",
-            t=timesteps,
+        output = torch.zeros(
+            (batch_size, h, w, timesteps, total_bands),
+            dtype=torch.float32,
+            device=device,
         )
-        output[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time
-        mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
+        mask = torch.ones(
+            (batch_size, h, w, timesteps, total_bands),
+            dtype=torch.bool,
+            device=device,
+        )
 
-    if x.meteo is not None:
-        meteo_hw = x.meteo[:, :, :, :, :]
-        meteo_hw_bands = meteo_hw[:, :, :, :, mapper["meteo"]["predictor"]]
-        output[:, :, :, :, mapper["meteo"]["presto"]] = meteo_hw_bands
-        mask[:, :, :, :, mapper["meteo"]["presto"]] = meteo_hw_bands == NODATAVALUE
+        def _fill(group: str, values: torch.Tensor):
+            values = values.to(torch.float32)
+            presto_idx = mapper[group]["presto"]
+            output[..., presto_idx] = values
+            mask[..., presto_idx] = values == NODATAVALUE
 
-    dynamic_world = np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
+        if s1 is not None:
+            _fill("S1", s1[..., mapper["S1"]["predictor"]])
+        if s2 is not None:
+            _fill("S2", s2[..., mapper["S2"]["predictor"]])
+        if dem is not None:
+            dem_with_time = (
+                dem[..., mapper["dem"]["predictor"]]
+                .unsqueeze(3)
+                .expand(-1, -1, -1, timesteps, -1)
+            )
+            _fill("dem", dem_with_time)
+        if meteo is not None:
+            _fill("meteo", meteo[..., mapper["meteo"]["predictor"]])
 
-    latlon: Union[ArrayTensor, None] = None
-    if x.latlon is not None:
-        latlon = rearrange(x.latlon, "b h w d -> (b h w) d")
+        dynamic_world = torch.full(
+            (batch_size * h * w, timesteps),
+            NUM_DYNAMIC_WORLD_CLASSES,
+            dtype=torch.long,
+            device=device,
+        )
 
-    timestamps: Union[ArrayTensor, None] = None
-    if x.timestamps is not None:
-        timestamps = repeat(x.timestamps, "b t d -> b h w t d", h=h, w=w)
-        timestamps = rearrange(timestamps, "b h w t d -> (b h w) t d")
+        latlon: Union[ArrayTensor, None] = None
+        if x.latlon is not None:
+            latlon = rearrange(
+                _to_device_tensor(x.latlon, device).to(torch.float32),
+                "b h w d -> (b h w) d",
+            )
 
-    output = rearrange(output, "b h w t d -> (b h w) t d")
-    mask = rearrange(mask, "b h w t d -> (b h w) t d")
+        timestamps: Union[ArrayTensor, None] = None
+        if x.timestamps is not None:
+            timestamps = _to_device_tensor(x.timestamps, device).long()
+            timestamps = repeat(timestamps, "b t d -> b h w t d", h=h, w=w)
+            timestamps = rearrange(timestamps, "b h w t d -> (b h w) t d")
 
-    output, mask = normalize(output, mask)
-    return output, mask, dynamic_world, latlon, timestamps, h, w
+        output = rearrange(output, "b h w t d -> (b h w) t d")
+        mask = rearrange(mask, "b h w t d -> (b h w) t d")
+
+        bands_add, bands_div = _normalize_constants(device, torch.float32)
+        output = (output + bands_add) / bands_div
+
+        b4_idx, b8_idx, ndvi_idx = (
+            BANDS.index("B4"),
+            BANDS.index("B8"),
+            BANDS.index("NDVI"),
+        )
+        band_1 = output[..., b8_idx]
+        band_2 = output[..., b4_idx]
+        denom = band_1 + band_2
+        ndvi = torch.where(
+            denom > 0, (band_1 - band_2) / denom, torch.zeros_like(denom)
+        )
+        output[..., ndvi_idx] = ndvi
+        mask[..., ndvi_idx] = mask[..., b8_idx] | mask[..., b4_idx]
+
+        return output, mask.long(), dynamic_world, latlon, timestamps, h, w
+
+    else:
+        # NumPy path (CPU, used e.g. during inference without a GPU).
+        mask, output = (
+            np.ones((batch_size, h, w, timesteps, total_bands)),
+            np.zeros((batch_size, h, w, timesteps, total_bands)),
+        )
+
+        if x.s1 is not None:
+            # for some reason, doing
+            # x.s1[ :, 0, 0, :, mapper["S1"]["predictor"]]
+            # directly yields an array of shape [bands, batch_size, timesteps]
+            # but splitting it like this doesn't. I am not sure why
+            s1_hw = x.s1[:, :, :, :, :]
+            s1_hw_bands = s1_hw[:, :, :, :, mapper["S1"]["predictor"]]
+            output[:, :, :, :, mapper["S1"]["presto"]] = s1_hw_bands
+            mask[:, :, :, :, mapper["S1"]["presto"]] = s1_hw_bands == NODATAVALUE
+
+        if x.s2 is not None:
+            s2_hw = x.s2[:, :, :, :, :]
+            s2_hw_bands = s2_hw[:, :, :, :, mapper["S2"]["predictor"]]
+            output[:, :, :, :, mapper["S2"]["presto"]] = s2_hw_bands
+            mask[:, :, :, :, mapper["S2"]["presto"]] = s2_hw_bands == NODATAVALUE
+
+        if x.dem is not None:
+            dem_with_time = repeat(
+                x.dem[:, :, :, mapper["dem"]["predictor"]],
+                "b h w d -> b h w t d",
+                t=timesteps,
+            )
+            output[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time
+            mask[:, :, :, :, mapper["dem"]["presto"]] = dem_with_time == NODATAVALUE
+
+        if x.meteo is not None:
+            meteo_hw = x.meteo[:, :, :, :, :]
+            meteo_hw_bands = meteo_hw[:, :, :, :, mapper["meteo"]["predictor"]]
+            output[:, :, :, :, mapper["meteo"]["presto"]] = meteo_hw_bands
+            mask[:, :, :, :, mapper["meteo"]["presto"]] = meteo_hw_bands == NODATAVALUE
+
+        dynamic_world = (
+            np.ones((batch_size * h * w, timesteps)) * NUM_DYNAMIC_WORLD_CLASSES
+        )
+
+        latlon = None
+        if x.latlon is not None:
+            latlon = rearrange(x.latlon, "b h w d -> (b h w) d")
+
+        timestamps = None
+        if x.timestamps is not None:
+            timestamps = repeat(x.timestamps, "b t d -> b h w t d", h=h, w=w)
+            timestamps = rearrange(timestamps, "b h w t d -> (b h w) t d")
+
+        output = rearrange(output, "b h w t d -> (b h w) t d")
+        mask = rearrange(mask, "b h w t d -> (b h w) t d")
+
+        output, mask = normalize(output, mask)
+        return output, mask, dynamic_world, latlon, timestamps, h, w
+
+
+_NORMALIZE_CONSTANTS: dict = {}
+
+
+def _normalize_constants(device: torch.device, dtype: torch.dtype):
+    """Cache (BANDS_ADD, BANDS_DIV) tensors per device/dtype."""
+    key = (device, dtype)
+    if key not in _NORMALIZE_CONSTANTS:
+        _NORMALIZE_CONSTANTS[key] = (
+            torch.tensor(BANDS_ADD, device=device, dtype=dtype),
+            torch.tensor(BANDS_DIV, device=device, dtype=dtype),
+        )
+    return _NORMALIZE_CONSTANTS[key]
+
+
+def _to_device_tensor(v, device: torch.device, non_blocking: bool = True):
+    if isinstance(v, np.ndarray):
+        v = torch.from_numpy(v)
+    return v.to(device, non_blocking=non_blocking)
 
 
 @lru_cache(maxsize=6)
@@ -389,8 +491,9 @@ class PretrainedPrestoWrapper(nn.Module):
 
         """
 
+        model_device = self.encoder.pos_embed.device
         s1_s2_era5_srtm, mask, dynamic_world, latlon, timestamps, h, w = (
-            dataset_to_model(x)
+            dataset_to_model(x, device=model_device)
         )
 
         # labels should have shape [B, H, W, T or 1, num_outputs].
@@ -407,14 +510,13 @@ class PretrainedPrestoWrapper(nn.Module):
         if x.timestamps is None:
             raise ValueError("Presto requires input timestamps")
 
-        model_device = self.encoder.pos_embed.device
         embeddings = self.encoder(
-            x=to_torchtensor(s1_s2_era5_srtm, device=model_device).float(),
-            dynamic_world=to_torchtensor(dynamic_world, device=model_device).long(),
-            latlons=to_torchtensor(latlon, device=model_device).float(),
-            mask=to_torchtensor(mask, device=model_device).long(),
+            x=s1_s2_era5_srtm,
+            dynamic_world=dynamic_world,
+            latlons=latlon,
+            mask=mask,
             # presto wants 0 indexed months, not 1 indexed months
-            month=to_torchtensor(timestamps[:, :, 1] - 1, device=model_device),
+            month=timestamps[:, :, 1] - 1,
             eval_pooling=eval_pooling.value if eval_pooling is not None else None,
         )
 
