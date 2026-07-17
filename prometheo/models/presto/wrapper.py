@@ -18,7 +18,6 @@ from prometheo.predictors import (
     S2_BANDS,
     ArrayTensor,
     Predictors,
-    to_torchtensor,
 )
 from prometheo.utils import device
 
