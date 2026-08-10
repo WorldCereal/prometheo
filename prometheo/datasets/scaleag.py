@@ -359,7 +359,7 @@ class ScaleAgDataset(Dataset):
             dtype=np.float32,
         )
         meteo = np.full(
-            (self.num_timesteps, len(METEO_BANDS)),
+            (1, 1, self.num_timesteps, len(METEO_BANDS)),
             fill_value=NODATAVALUE,
             dtype=np.float32,
         )

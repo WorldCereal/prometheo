@@ -20,7 +20,7 @@ class TestDataset(TestCase):
             batch.s2.shape, (batch_size, 1, 1, num_timesteps, len(S2_BANDS))
         )
         self.assertEqual(
-            batch.meteo.shape, (batch_size, num_timesteps, len(METEO_BANDS))
+            batch.meteo.shape, (batch_size, 1, 1, num_timesteps, len(METEO_BANDS))
         )
         self.assertEqual(batch.timestamps.shape, (batch_size, num_timesteps, 3))
         self.assertTrue((batch.timestamps[:, :, 1] <= 12).all())
@@ -35,9 +35,9 @@ class TestDataset(TestCase):
         self.assertTrue((batch.timestamps[:, :, 0] <= 2124).all())
         self.assertEqual(batch.latlon.shape, (batch_size, 1, 1, 2))
         self.assertTrue((batch.latlon[:, :, :, 0] >= -90).all())
-        self.assertTrue((batch.latlon[:, :, :,  0] <= 90).all())
-        self.assertTrue((batch.latlon[:, :, :,  1] >= -180).all())
-        self.assertTrue((batch.latlon[:, :, :,  1] <= 180).all())
+        self.assertTrue((batch.latlon[:, :, :, 0] <= 90).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] >= -180).all())
+        self.assertTrue((batch.latlon[:, :, :, 1] <= 180).all())
         self.assertEqual(batch.dem.shape, (batch_size, 1, 1, len(DEM_BANDS)))
 
         if batch.label is not None:

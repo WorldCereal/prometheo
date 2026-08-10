@@ -46,7 +46,7 @@ def to_torchtensor(x: ArrayTensor, device: torch.device = device):
 class Predictors(NamedTuple):
     s1: Optional[ArrayTensor] = None  # [B, H, W, T, len(S1_bands)]
     s2: Optional[ArrayTensor] = None  # [B, H, W, T, len(S2_bands)]
-    meteo: Optional[ArrayTensor] = None  # [B, T, len(meteo_bands)]
+    meteo: Optional[ArrayTensor] = None  # [B, H, W, T, len(meteo_bands)]
     dem: Optional[ArrayTensor] = None  # [B, H, W, len(dem)]
     latlon: Optional[ArrayTensor] = None  # [B, H, W, 2]
     # Gabi to try and implement the possibility to learn a linear layer for each aux_input
