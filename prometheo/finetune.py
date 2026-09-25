@@ -5,10 +5,16 @@ from pathlib import Path
 from typing import List, Optional, Sized, Union, cast
 
 import torch
-from loguru import logger
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+
+    logger = logging.getLogger(__name__)  # type: ignore[assignment]
+
 from torch.optim import AdamW, lr_scheduler
 from torch.utils.data import DataLoader
-from tqdm.auto import tqdm
 
 from prometheo.predictors import NODATAVALUE
 from prometheo.utils import DEFAULT_SEED, device, initialize_logging, seed_everything
@@ -211,6 +217,9 @@ def _train_loop(
     torch.nn.Module
         The trained model.
     """
+
+    from tqdm.auto import tqdm
+
     train_loss = []
     val_loss = []
     best_loss = None

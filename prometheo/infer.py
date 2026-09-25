@@ -1,6 +1,12 @@
 import torch
 from torch import nn
 
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
+
 from .models.pooling import PoolingMethods
 from .predictors import Predictors
 
@@ -10,6 +16,7 @@ def extract_features_from_model(
     x: Predictors,
     batch_size: int,
     pooling: PoolingMethods,
+    show_progress: bool = False,
 ) -> torch.Tensor:
     """
     Extract features from a model for the given input data using batching and pooling.
@@ -24,6 +31,8 @@ def extract_features_from_model(
         The number of samples per batch.
     pooling : PoolingMethods
         The pooling method to apply to the model outputs.
+    show_progress : bool, optional
+        If True, display a progress bar over batches.
 
     Returns
     -------
@@ -35,6 +44,9 @@ def extract_features_from_model(
     # Ensure model is in evaluation mode
     model.eval()
     with torch.no_grad():
-        for batch in x.as_batches(batch_size):
+        iterator = x.as_batches(batch_size)
+        if show_progress and tqdm is not None:
+            iterator = tqdm(iterator, desc="Extracting features", unit="batch")
+        for batch in iterator:
             model_features.append(model(batch, pooling))
     return torch.concat(model_features, dim=0)

@@ -480,7 +480,7 @@ class Encoder(nn.Module):
         self,
         x: torch.Tensor,
         dynamic_world: torch.Tensor,
-        latlons: torch.Tensor,
+        latlons: Optional[torch.Tensor],
         mask: Optional[torch.Tensor] = None,
         month: Union[torch.Tensor, int] = 0,
         eval_pooling: Optional[str] = None,
@@ -555,18 +555,22 @@ class Encoder(nn.Module):
         x = torch.cat(all_tokens, dim=1)  # [batch, timesteps, embedding_dim]
         mask = torch.cat(all_masks, dim=1)  # [batch, timesteps]
         x, orig_indices, upd_mask = self.mask_tokens(x, mask)
-        # append latlon tokens
-        latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
+        if latlons is not None:
+            latlon_tokens = self.latlon_embed(self.cartesian(latlons)).unsqueeze(1)
+            if self.training and (self.latlon_dropout > 0):
+                latlon_mask = torch.bernoulli(
+                    torch.full((x.shape[0], 1), self.latlon_dropout, device=device)
+                )
+            else:
+                latlon_mask = torch.zeros(x.shape[0])[:, None].to(device)
+        else:
+            latlon_tokens = torch.zeros_like(x[:, 0:1, :])
+            latlon_mask = torch.ones(x.shape[0])[:, None].to(device)
         x = torch.cat((latlon_tokens, x), dim=1)
         # by default the latlon token is always kept (mask value 0). If latlon
         # dropout is enabled, drop (mask) it per-example with the given
         # probability while training so the model learns to cope without it.
-        if self.training and (self.latlon_dropout > 0):
-            latlon_mask = torch.bernoulli(
-                torch.full((x.shape[0], 1), self.latlon_dropout, device=device)
-            )
-        else:
-            latlon_mask = torch.zeros(x.shape[0])[:, None].to(device)
+
         upd_mask = torch.cat((latlon_mask, upd_mask), dim=1)
         orig_indices = torch.cat(
             (torch.zeros(x.shape[0])[:, None].to(device).int(), orig_indices + 1),
@@ -792,7 +796,7 @@ class Decoder(nn.Module):
         return x
 
     def reconstruct_inputs(self, x) -> Tuple[torch.Tensor, torch.Tensor]:
-        # remove the latlon token
+        # remove latlon token
         x = x[:, 1:, :]
 
         # split into channel groups
@@ -859,7 +863,7 @@ class PrestoFineTuningModel(nn.Module):
         self,
         x: torch.Tensor,
         dynamic_world: torch.Tensor,
-        latlons: torch.Tensor,
+        latlons: Optional[torch.Tensor],
         mask: Optional[torch.Tensor] = None,
         month: Union[torch.Tensor, int] = 0,
     ) -> torch.Tensor:
@@ -899,7 +903,7 @@ class Presto(nn.Module):
         self,
         x: torch.Tensor,
         dynamic_world: torch.Tensor,
-        latlons: torch.Tensor,
+        latlons: Optional[torch.Tensor],
         mask: Optional[torch.Tensor] = None,
         month: Union[torch.Tensor, int] = 0,
     ) -> torch.Tensor:
