@@ -416,9 +416,20 @@ class Encoder(nn.Module):
 
         # https://stackoverflow.com/a/68621610/2332296
         # move all non-masked values to the front of their rows
-        sorted_mask, indices = torch.sort(
-            (~mask).int(), dim=1, descending=True, stable=True
-        )
+        try:
+            is_onnx_export = torch.onnx.is_in_onnx_export()
+        except (AttributeError, RuntimeError):
+            is_onnx_export = False
+
+        if is_onnx_export:
+            # sort is stable by default in onnx, but will crash when set
+            sorted_mask, indices = torch.sort(
+                (~mask).int(), dim=1, descending=True
+            )
+        else:
+            sorted_mask, indices = torch.sort(
+                (~mask).int(), dim=1, descending=True, stable=True
+            )
         x = x.gather(1, indices[:, :, None].expand_as(x))
         # set masked values to 0 (not really necessary since we'll ignore them anyway)
         x = x * sorted_mask.unsqueeze(-1)
