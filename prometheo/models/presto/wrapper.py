@@ -164,23 +164,23 @@ def normalize(x: np.ndarray, mask: np.ndarray):
 
 
 def dataset_to_model(x: Predictors, device: Optional[torch.device] = None):
-    batch_sizes = [v.shape[0] for v in [x.s1, x.s2, x.meteo, x.dem] if v is not None]
-    timesteps = [v.shape[-2] for v in [x.s1, x.s2, x.meteo] if v is not None]
-    hs = [v.shape[1] for v in [x.s1, x.s2, x.dem, x.latlon] if v is not None]
-    ws = [v.shape[2] for v in [x.s1, x.s2, x.dem, x.latlon] if v is not None]
-    if len(timesteps) == 0:
-        raise ValueError("One of s1, s2, meteo must be not None")
-    if len(hs) == 0:
-        raise ValueError("One of s1, s2, dem must be not None")
-    if not len(set(batch_sizes)) == 1:
-        raise ValueError("dim 0 (batch size) must be consistent for s1, s2, dem, meteo")
-    if not len(set(timesteps)) == 1:
-        raise ValueError("dim -2 (timesteps) must be consistent for s1, s2, meteo")
-    if not len(set(hs)) == 1:
-        raise ValueError("dim 1 (height) must be consistent for s1, s2, dem, latlon")
+    batch_sizes = [v.shape[0] for v in [x.s1, x.s2, x.meteo, x.dem]]
+    timesteps = [v.shape[-2] for v in [x.s1, x.s2, x.meteo]]
+    hs = [v.shape[1] for v in [x.s1, x.s2, x.dem, x.latlon]]
+    ws = [v.shape[2] for v in [x.s1, x.s2, x.dem, x.latlon]]
+    # if len(timesteps) == 0:
+    #     raise ValueError("One of s1, s2, meteo must be not None")
+    # if len(hs) == 0:
+    #     raise ValueError("One of s1, s2, dem must be not None")
+    # if not len(set(batch_sizes)) == 1:
+    #     raise ValueError("dim 0 (batch size) must be consistent for s1, s2, dem, meteo")
+    # if not len(set(timesteps)) == 1:
+    #     raise ValueError("dim -2 (timesteps) must be consistent for s1, s2, meteo")
+    # if not len(set(hs)) == 1:
+    #     raise ValueError("dim 1 (height) must be consistent for s1, s2, dem, latlon")
     h = hs[0]
-    if not len(set(ws)) == 1:
-        raise ValueError("dim 2 (width) must be consistent for s1, s2, dem, latlon")
+    # if not len(set(ws)) == 1:
+    #     raise ValueError("dim 2 (width) must be consistent for s1, s2, dem, latlon")
     w = ws[0]
 
     batch_size, timesteps = batch_sizes[0], timesteps[0]
@@ -211,6 +211,12 @@ def dataset_to_model(x: Predictors, device: Optional[torch.device] = None):
             output[..., presto_idx] = values
             mask[..., presto_idx] = values == NODATAVALUE
 
+        def _fill_dem(group: str, values: torch.Tensor):
+            values = values.to(torch.float32)
+            presto_idx = mapper[group]["presto"]
+            output[..., presto_idx] = values
+            mask[..., presto_idx] = values == NODATAVALUE
+
         if s1 is not None:
             _fill("S1", s1[..., mapper["S1"]["predictor"]])
         if s2 is not None:
@@ -221,9 +227,9 @@ def dataset_to_model(x: Predictors, device: Optional[torch.device] = None):
                 .unsqueeze(3)
                 .expand(-1, -1, -1, timesteps, -1)
             )
-            _fill("dem", dem_with_time)
-        if meteo is not None:
-            _fill("meteo", meteo[..., mapper["meteo"]["predictor"]])
+            _fill_dem("dem", dem_with_time)
+        #if meteo is not None:
+        _fill("meteo", meteo[..., mapper["meteo"]["predictor"]])
 
         dynamic_world = torch.full(
             (batch_size * h * w, timesteps),
@@ -534,14 +540,14 @@ class PretrainedPrestoWrapper(nn.Module):
 
         # Need to reintroduce spatial and temporal dims according to prometheo convention
         if eval_pooling == PoolingMethods.GLOBAL:
-            b = int(embeddings.shape[0] / (h * w))
-            embeddings = rearrange(embeddings, "(b h w) d -> b h w d", b=b, h=h, w=w)
+            b = embeddings.shape[0] / (h * w)
+            embeddings = rearrange(embeddings, "(b h w) d -> b h w d", b=b.int(), h=h, w=w)
             # add the time dimension back
             embeddings = torch.unsqueeze(embeddings, 3)
         elif eval_pooling == PoolingMethods.TIME:
-            b = int(embeddings.shape[0] / (h * w))
+            b = embeddings.shape[0] / (h * w)
             embeddings = rearrange(
-                embeddings, "(b h w) t d -> b h w t d", b=b, h=h, w=w
+                embeddings, "(b h w) t d -> b h w t d", b=int(b), h=h, w=w#or use b.int() for onnx export
             )
         else:
             if (h != 1) or (w != 1):
